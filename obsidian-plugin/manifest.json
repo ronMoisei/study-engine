@@ -1,0 +1,9 @@
+{
+  "id": "study-panel",
+  "name": "Study Panel",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Deterministic Anki review loop: answer (type or dictate), checklist grading by the local study-engine, rating and remedial cards.",
+  "author": "you",
+  "isDesktopOnly": true
+}
