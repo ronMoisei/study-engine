@@ -8,7 +8,7 @@
   python study.py deploy                     copy the engine into Magistrale (Drive) + workspace plugin: all PCs
   python study.py calls [--last N]           show logged model calls (job, model, ok, tokens)
 
-  python study.py ingest <file> --domain D   material -> proposal (nothing is written to the vault yet)
+  python study.py ingest <file> [--course C] [--domain D]   material -> proposal (nothing written yet)
   python study.py proposals                  list proposals
   python study.py show <id>                  print one proposal
   python study.py approve <id> [--accept 0,2] [--reject 3]   write items to Graph/ (default: all pending)
@@ -240,8 +240,17 @@ def ingest_cli(cfg, a):
         if not a.target:
             sys.exit(f"{a.cmd}: missing argument")
         if a.cmd == "ingest":
-            if not a.domain:
-                sys.exit("ingest: --domain is required (e.g. --domain deep-nlp)")
+            from engine import learn
+            path = ingest.resolve_path(cfg, a.target)
+            course = a.course or learn.course_of(cfg, path) or ""
+            if course and not (cfg.material / course).is_dir():
+                hits = [c for c in learn.courses(cfg) if course.lower() in c.lower()]
+                if len(hits) != 1:
+                    sys.exit(f"ingest: --course '{course}' matches {len(hits)} course folders")
+                course = hits[0]
+            domain = a.domain or (learn.default_domain(cfg, cfg.material / course) if course else "")
+            if not domain:
+                sys.exit("ingest: give --domain (or --course, or a file inside Material/<course>/)")
             store = Store(cfg.db_path)
             seen = {}
 
@@ -250,7 +259,7 @@ def ingest_cli(cfg, a):
                     seen["stage"] = stage
                     print(f"  {stage}: {total}", flush=True)
             p = ingest.ingest(cfg, store, make_provider(cfg, store), make_embedder(cfg, store),
-                              ingest.resolve_path(cfg, a.target), a.domain, progress)
+                              path, domain, progress, course=course)
             return print_proposal(p)
         if a.cmd == "show":
             return print_proposal(ingest.load(cfg, a.target))
@@ -303,7 +312,8 @@ def main():
     ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "install-sidecar", "deploy", "calls",
                                     "ingest", "proposals", "show", "approve", "plan", "propose", "sync"])
     ap.add_argument("target", nargs="?", help="file for ingest; proposal id for show/approve/plan")
-    ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp")
+    ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp (default: from the course)")
+    ap.add_argument("--course", help="ingest: the Material course the concepts belong to (a unique part of its name)")
     ap.add_argument("--accept", help="comma-separated item numbers")
     ap.add_argument("--reject", help="comma-separated item numbers")
     ap.add_argument("--deck")

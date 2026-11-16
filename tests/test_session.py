@@ -53,6 +53,32 @@ class SessionProposals(unittest.TestCase):
         self.assertEqual(by["Spectral gap"]["status"], "pending")
         self.assertEqual(len(ingest.list_proposals(self.cfg)), 1)
 
+    def test_course_graph(self):
+        from engine import graphview, notes
+        (self.cfg.material / "01VSCWS - Data science and machine learning").mkdir()
+        data = {"session": "s", "course": "Data science and machine",                 # a unique part is enough
+                "concepts": [{"title": "Gini impurity", "kind": "definition",
+                              "definition": "One minus the sum of squared class proportions of a node."}]}
+        p = session.propose(self.cfg, data)
+        self.assertEqual(p["domain"], "data-science-and-machine-learning")
+        ingest.apply(self.cfg, p["id"])
+        f = self.cfg.graph / "data-science-and-machine-learning" / "gini_impurity.md"
+        self.assertEqual(notes.parse_concept(f.read_text(encoding="utf-8"))["course"],
+                         "01VSCWS - Data science and machine learning")
+        groups = graphview.graph_payload(self.cfg, group="01VSCWS - Data science and machine learning")
+        self.assertEqual([n["id"] for n in groups["nodes"]], ["gini_impurity"])     # a course graph, created
+        # an older note without the field still lands in its course through its source path
+        old = notes.render_concept({"id": "wardrop", "title": "Wardrop equilibrium", "kind": "definition",
+                                    "domain": "hw1-tutorial", "topic": "traffic", "aliases": [],
+                                    "definition": "Equal travel time on all used paths.", "propositions": [],
+                                    "requires": [], "related": [],
+                                    "sources": ["01VSCWS - Data science and machine learning/HW1/hw1.pdf#page=4"]})
+        (self.cfg.graph / "hw1-tutorial").mkdir()
+        (self.cfg.graph / "hw1-tutorial" / "wardrop.md").write_text(old, encoding="utf-8")
+        g = graphview.graph_payload(self.cfg)["groups"]
+        self.assertEqual(g["01VSCWS - Data science and machine learning"], 2)
+        self.assertNotIn("hw1-tutorial", g)
+
     def test_invalid_input(self):
         with self.assertRaises(session.SessionError):
             session.propose(self.cfg, {"session": "x", "domain": "d", "concepts": [{"title": "T", "kind": "blob",

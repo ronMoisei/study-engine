@@ -78,6 +78,25 @@ def new_conversation(message, model="flash", project_id=None, title=None):
     return agentapi(args, project_id=project_id)
 
 
+def start_session(message, model, project_id, title):
+    """New conversation in `project_id` if the app's local engine knows that project; otherwise in the panel's
+    own project. -> (agentapi result, project used, note for the learner or None).
+
+    Cloud-only projects (shown with a cloud icon in the app) are not known to the local engine — agentapi answers
+    `NotFound: project ... not found` — and `agy --remote-agent` cannot start one non-interactively yet
+    ("--remote-agent does not support --print yet", tested 2026-11-16)."""
+    if project_id:
+        try:
+            return new_conversation(message, model, project_id, title), project_id, None
+        except AgentApiError as e:
+            if "not found" not in str(e).lower():
+                raise
+            note = (f"project {project_id[:8]}… is not known to the app on this PC (a cloud-only project?): "
+                    "started in the panel's project instead")
+            return new_conversation(message, model, None, title), "panel's project", note
+    return new_conversation(message, model, None, title), "panel's project", None
+
+
 def title_of(message):
     """'Topic: **Word embeddings** …' -> 'Study · Word embeddings' (conversation title in the app)."""
     import re

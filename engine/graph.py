@@ -38,6 +38,7 @@ class Node:
     pos: tuple | None = None                           # (sequence, ordinal): order of first appearance
     is_concept: bool = False
     prerequisite_of: list = field(default_factory=list)   # ids that require this node (stored here)
+    course: str = ""                                   # Material/<course> folder this node belongs to ("" = none)
 
     @property
     def text(self):
@@ -128,7 +129,7 @@ def _concept_note(path):
     return Node(id=path.stem, name=c["title"] or path.stem, statement=c["definition"], kind=c["kind"] or "",
                 domain=c["domain"] or "", aliases=c["aliases"], path=path, edges=edges, topic=c["topic"] or "",
                 propositions=c["propositions"], sources=c["sources"], is_concept=True,
-                prerequisite_of=c["prerequisite_of"],
+                prerequisite_of=c["prerequisite_of"], course=c.get("course") or "",
                 pos=position_of_anchor(c["sources"][0]) if c["sources"] else None)
 
 def _graph_note(path):
@@ -182,6 +183,26 @@ def _atomic_note(path):
     return node, inverse
 
 
+def course_of_node(cfg, node, courses):
+    """The course a node belongs to: an atomic note's course folder, else the course folder its first source
+    lies in ('01TXLWS - …/02_Homeworks/HW1/hw1.pdf#page=4', 'Material/<course>/…'). '' when none."""
+    if node.readonly and node.path is not None:
+        try:
+            rel = node.path.resolve().relative_to(cfg.material.resolve())
+            if len(rel.parts) > 1:
+                return rel.parts[0]
+        except (ValueError, OSError):
+            pass
+    for s in node.sources or []:
+        p = str(s).strip("[]").split("#")[0].replace("\\", "/")
+        if p.startswith("Material/"):
+            p = p[len("Material/"):]
+        head = p.split("/", 1)[0]
+        if head in courses:
+            return head
+    return ""
+
+
 class Graph:
     def __init__(self, nodes=None):
         self.nodes = nodes or {}
@@ -205,6 +226,10 @@ class Graph:
                     nodes[p.stem] = node
                     inverse += [(t, p.stem) for t in inv]
         g = cls(nodes)
+        courses = {d.name for d in cfg.material.iterdir() if d.is_dir()} if cfg.material.is_dir() else set()
+        for n in nodes.values():
+            if not n.course:
+                n.course = course_of_node(cfg, n, courses)
         for n in list(nodes.values()):                     # "prerequisite_of" stored in n: target requires n
             inverse += [(t, n.id) for t in n.prerequisite_of]
         for src, dst in inverse:                           # src requires dst

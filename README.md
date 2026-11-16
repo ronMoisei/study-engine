@@ -135,8 +135,10 @@ error). Settings that must be the same everywhere go in the synced `<workspace>/
 ```
 
 `agy_project` makes every conversation the panel starts (Teach me this, Prepare lecture, Start learning) open in
-that project — for example an online project you can also reach from a tablet. The panel passes it the same way the
-app's own sidecar SDK does: as `ANTIGRAVITY_PROJECT_ID` for the `agentapi new-conversation` call.
+that project. The panel passes it the same way the app's own sidecar SDK does: as `ANTIGRAVITY_PROJECT_ID` for the
+`agentapi new-conversation` call. It must be a project the app knows **on this PC**: a cloud-only project (cloud
+icon in the app) is answered with "project not found", and the panel then falls back to its own project and says so.
+(`agy --remote-agent` could reach a cloud project, but it does not support non-interactive starts yet.)
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -165,7 +167,9 @@ Model assignment (measured choices):
 Three tabs, plain JavaScript (`sidecar_ui/`), math rendered by vendored KaTeX 0.16.11.
 
 **Graph**
-- *A course or domain*: the prerequisite DAG laid out deterministically (`engine/layout.py`: level = longest path
+- *A course*: the course's atomic notes plus every approved concept learned in that course — from its material or
+  from a teaching session about it (the note's `course` field, or the course folder its source lies in). A course
+  without atomic notes gets its graph as soon as it has one concept. The prerequisite DAG is laid out deterministically (`engine/layout.py`: level = longest path
   from a foundation, barycenter sweeps against crossings, foundations at the bottom), coloured by learner status.
 - *All knowledge, by concept*: concept clusters as macro-nodes (`engine/clusters.py` — start from each note's topic,
   fold small topics into the cluster they share most links with). Arrows point from prerequisite to what builds on

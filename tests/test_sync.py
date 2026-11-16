@@ -84,6 +84,23 @@ class Project(unittest.TestCase):
         self.assertEqual(seen["cmd"][:5], ["ls.exe", "agentapi", "new-conversation", "--model", "flash"])
         self.assertIn("Study · Word embeddings", seen["cmd"])
 
+    def test_unknown_project_falls_back_to_the_panels_project(self):
+        calls = []
+
+        def fake(args, project_id=None, timeout=60):
+            calls.append(project_id)
+            if project_id:
+                raise sidecar.AgentApiError('agentapi exited 1: not_found: project "x" not found')
+            return {"ok": 1}
+        with mock.patch.object(sidecar, "agentapi", side_effect=fake):
+            out, project, note = sidecar.start_session("Topic: T", "flash", "cloud-only", "Study · T")
+        self.assertEqual(calls, ["cloud-only", None])
+        self.assertEqual(project, "panel's project")
+        self.assertIn("cloud-only project", note)
+        with mock.patch.object(sidecar, "agentapi", side_effect=sidecar.AgentApiError("exited 1: boom")):
+            with self.assertRaises(sidecar.AgentApiError):                 # other errors are not hidden
+                sidecar.start_session("Topic: T", "flash", "p", "t")
+
     def test_titles(self):
         self.assertEqual(sidecar.title_of("x\nTopic: the concept cluster **Attention mechanisms** (22 concepts in the "
                                           "study graph; courses: A). Prepare it as one lecture."),

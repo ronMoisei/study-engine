@@ -73,7 +73,10 @@ def render_concept(c):
     fm = ["---", f"id: {c['id']}", "type: concept", f"title: {_q(_oneline(c['title']))}"]
     aliases = [a for a in dict.fromkeys(_oneline(a) for a in c.get("aliases", [])) if a and a != c["title"]]
     fm += ["aliases:"] + [f"  - {_q(a)}" for a in aliases] if aliases else ["aliases: []"]
-    fm += [f"kind: {kind}", f"domain: {c['domain']}", f"topic: {c['topic']}", f"epistemic_status: {status}"]
+    fm += [f"kind: {kind}", f"domain: {c['domain']}", f"topic: {c['topic']}"]
+    if c.get("course"):                                    # the Material/ course folder it was learned in
+        fm.append(f"course: {_q(c['course'])}")
+    fm.append(f"epistemic_status: {status}")
     if status not in ("proof", "definition"):
         fc = c.get("falsification_conditions") or ["Taken from the source without independent verification"]
         fm += ["falsification_conditions:"] + [f"  - {_q(_oneline(x))}" for x in fc]
@@ -125,6 +128,7 @@ def parse_concept(text):
     as_list = lambda v: v if isinstance(v, list) else ([v] if v else [])  # noqa: E731
     return {"id": fm.get("id"), "title": fm.get("title") or title, "aliases": as_list(fm.get("aliases")),
             "kind": fm.get("kind"), "domain": fm.get("domain"), "topic": fm.get("topic"),
+            "course": fm.get("course") or "",
             "epistemic_status": fm.get("epistemic_status"),
             "falsification_conditions": as_list(fm.get("falsification_conditions")),
             "sources": as_list(fm.get("sources")), "definition": " ".join(definition),

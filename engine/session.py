@@ -51,6 +51,9 @@ def propose(cfg, data):
     if not concepts:
         raise SessionError("no concepts in the file")
     course = str(data.get("course") or "").strip()
+    if course and not (cfg.material / course).is_dir():        # a unique part of the folder name is enough
+        hits = [c for c in learn.courses(cfg) if course.lower() in c.lower()]
+        course = hits[0] if len(hits) == 1 else course
     domain = topics.slugify(data.get("domain") or (learn.default_domain(cfg, cfg.material / course) if course else ""))
     if not domain:
         raise SessionError("give a domain, or the course folder name so the domain can be derived")
@@ -76,7 +79,8 @@ def propose(cfg, data):
         props = [" ".join(p.split()) for p in props if str(p).strip()]
         aliases = [" ".join(str(a).split()) for a in c.get("aliases") or [] if str(a).strip()]
         match = next((names[_key(s)] for s in [title] + aliases if _key(s) in names), None)
-        concept = {"title": title, "kind": kind, "topic": topic, "definition": definition, "aliases": aliases,
+        concept = {"title": title, "kind": kind, "topic": topic, "course": course,
+                   "definition": definition, "aliases": aliases,
                    "propositions": [{"text": p, "source": source} for p in props], "sources": [source],
                    "quote": "", "anchor": source}                 # taught, not quoted from a file
         it = {"index": n, "slug": None, "concept": concept, "decision": "new", "match": None, "status": "pending",

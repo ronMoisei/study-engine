@@ -16,7 +16,10 @@ def _rel(path, base):
 
 
 def group_of(cfg, node):
-    """Graph concepts group by domain; course atomic notes by their course folder in Material/."""
+    """Course graphs: every node goes to its course (atomic notes by folder, concepts by their `course` field or
+    the course their sources come from); concepts with no course stay in their domain."""
+    if node.course:
+        return node.course
     if node.is_concept or not node.readonly:
         return node.domain or "graph"
     rel = _rel(node.path, cfg.material)

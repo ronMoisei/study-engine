@@ -136,7 +136,8 @@ function messageActions(getParams, msgPath, sendPath, ready, label) {
     button.disabled = true;
     try {
       const r = await api("POST", sendPath, { ...getParams(), conversationId: intoThisChat ? CONVERSATION : null });
-      out.textContent = r.sent_to ? "Sent to this conversation." : `Started a new session${r.project && r.project !== "panel's project" ? " in your project" : ""}.`;
+      out.textContent = r.sent_to ? "Sent to this conversation."
+        : `Started a new session${r.project && r.project !== "panel's project" ? " in your project" : " in the panel's project"}.` + (r.note ? ` (${r.note})` : "");
     } catch (e) { out.textContent = e.message + " — use 'Show message' and paste it into a conversation."; }
     button.disabled = !ready();
   };

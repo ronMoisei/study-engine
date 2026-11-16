@@ -211,11 +211,10 @@ def make_handler(engine, token=None):
                     if b.get("conversationId"):
                         out = sidecar.send_message(b["conversationId"], msg)
                         return self._send(200, {"sent_to": b["conversationId"], "result": out, "message": msg})
-                    out = sidecar.new_conversation(msg, model=engine.cfg.teach_model,
-                                                   project_id=engine.cfg.agy_project or None,
-                                                   title=sidecar.title_of(msg))
+                    out, project, note = sidecar.start_session(msg, engine.cfg.teach_model, engine.cfg.agy_project,
+                                                               sidecar.title_of(msg))
                     return self._send(200, {"new_conversation": True, "result": out, "message": msg,
-                                            "project": engine.cfg.agy_project or "panel's project"})
+                                            "project": project, "note": note})
                 if method == "GET" and path == "/health":
                     return self._send(200, engine.health())
                 if method == "GET" and path == "/sync":

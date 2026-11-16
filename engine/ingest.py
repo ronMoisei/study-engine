@@ -451,9 +451,12 @@ def _attr(graph, items_by_slug, nid, key):
 
 # ── the pipeline ──
 
-def ingest(cfg, store, llm, embedder, path, domain, progress=None):
-    """Run the pipeline and save a proposal. Returns the proposal dict."""
+def ingest(cfg, store, llm, embedder, path, domain, progress=None, course=None):
+    """Run the pipeline and save a proposal. Returns the proposal dict.
+    `course`: the Material/ course folder the concepts belong to (default: the folder `path` lies in)."""
+    from . import learn
     t0 = time.time()
+    course = course or learn.course_of(cfg, path) or ""
     session = "ingest_" + time.strftime("%Y-%m-%d_%H%M%S")
     domain = topics.slugify(domain)
     cloud = hasattr(llm, "route") and llm.route("extract")[0] == "agy"
@@ -478,7 +481,8 @@ def ingest(cfg, store, llm, embedder, path, domain, progress=None):
         vec_of[slug] = vec
         new_pos[slug] = G.position_of_anchor(c["anchor"])
         matcher.add(slug, c["title"], c["definition"], vec)
-        items.append({"index": n, "slug": slug, "concept": {k: v for k, v in c.items() if k != "first_passage"},
+        items.append({"index": n, "slug": slug,
+                      "concept": {**{k: v for k, v in c.items() if k != "first_passage"}, "course": course},
                       "decision": "new", "match": None, "status": "pending", "neighbours": [], "edges": [],
                       "required_by": [], "dropped_edges": [], "new_propositions": []})
     by_slug = {it["slug"]: it for it in items}
@@ -667,7 +671,8 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
                        if e["predicate"] != "requires" and edge_ok(slug, e["to"], e)]
                 pre = [e["from"] for e in it["required_by"] if edge_ok(e["from"], slug, e)]
                 concept = {"id": slug, "title": c["title"], "aliases": c["aliases"], "kind": c["kind"],
-                           "domain": p["domain"], "topic": c["topic"], "definition": c["definition"],
+                           "domain": p["domain"], "topic": c["topic"], "course": c.get("course", ""),
+                           "definition": c["definition"],
                            "propositions": [{"text": x["text"], "source": x["source"]} for x in c["propositions"]],
                            "requires": req, "prerequisite_of": pre, "related": rel, "sources": c["sources"]}
                 _write_validated(cfg.graph / p["domain"] / f"{slug}.md", concept, known)
