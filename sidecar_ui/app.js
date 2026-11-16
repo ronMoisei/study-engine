@@ -292,7 +292,7 @@ const Graph = {
     const s = this.state;
     let drag = null;
     root.addEventListener("pointerdown", (ev) => {
-      if (ev.target.closest && ev.target.closest(".node")) return;   // let nodes receive their click
+      if (ev.target.closest && ev.target.closest(".node, .kclose, .clickable")) return;   // let these receive their click
       drag = { x: ev.clientX, y: ev.clientY, tx: s.tx, ty: s.ty }; root.classList.add("dragging"); root.setPointerCapture(ev.pointerId);
     });
     root.addEventListener("pointermove", (ev) => { if (!drag) return; s.tx = drag.tx + ev.clientX - drag.x; s.ty = drag.ty + ev.clientY - drag.y; this.apply(); });

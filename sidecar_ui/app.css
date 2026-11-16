@@ -58,6 +58,10 @@ h4 { margin: 14px 0 4px; font-size: 13px; }
 svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0c0e 70%); }
 .cluster-label { font: 600 15px "Cascadia Mono", Consolas, monospace; letter-spacing: .02em; pointer-events: none; }
 .cluster-label.clickable { cursor: pointer; pointer-events: auto; }
+.kclose { cursor: pointer; }
+.kclose rect { fill: #1d1d20; stroke: var(--s-line); }
+.kclose text { fill: var(--s-fg); font: 11px "Segoe UI", sans-serif; pointer-events: none; }
+.kclose:hover rect { stroke: var(--s-fg); fill: #2a2a2e; }
 .kedge { stroke: #bdbdbd; fill: none; }
 .kedge.lateral { stroke: var(--s-accent); stroke-dasharray: 3 4; }
 .kedge.hot { stroke: #fff; }

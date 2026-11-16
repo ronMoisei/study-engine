@@ -169,6 +169,7 @@ const Knowledge = {
 
     // glows: one per cluster, around its macro-node or its open concepts
     const glows = svg("g"), names = svg("g");
+    this.openAreas = [];
     d.clusters.forEach((c, i) => {
       const colour = col.cluster(c.id);
       const pts = this.expanded(c.id) ? members[c.id].map((n) => items[n.id]) : [items["C:" + c.id]];
@@ -178,12 +179,23 @@ const Knowledge = {
       for (const [o, a] of [[0, 0.5], [0.55, 0.22], [1, 0]]) grad.append(svg("stop", { offset: o, "stop-color": colour, "stop-opacity": a * cfg.glow }));
       defs.append(grad);
       const open = this.expanded(c.id);
-      glows.append(svg("ellipse", { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: (x1 - x0) / 2 + (open ? 110 : 95), ry: (y1 - y0) / 2 + (open ? 80 : 75), fill: `url(#kglow${i})` }));
+      const area = { id: c.id, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: (x1 - x0) / 2 + (open ? 110 : 95), ry: (y1 - y0) / 2 + (open ? 80 : 75) };
+      glows.append(svg("ellipse", { cx: area.cx, cy: area.cy, rx: area.rx, ry: area.ry, fill: `url(#kglow${i})` }));
       if (open) {
-        const t = svg("text", { x: (x0 + x1) / 2, y: y0 - 30, class: "cluster-label", fill: colour, "text-anchor": "middle", style: `font-size:${15 * cfg.labelSize}px` });
+        const close = () => { this.open.delete(c.id); this.redrawAround(G, "C:" + c.id); };
+        const t = svg("text", { x: area.cx, y: y0 - 30, class: "cluster-label", fill: colour, "text-anchor": "middle", style: `font-size:${15 * cfg.labelSize}px` });
         t.textContent = `${c.name} · ${c.size}`;
-        if (cfg.detail !== "all") { t.classList.add("clickable"); t.addEventListener("click", () => { this.open.delete(c.id); this.redrawAround(G, "C:" + c.id); }); }
         names.append(t);
+        if (cfg.detail !== "all") {
+          this.openAreas.push(area);
+          t.classList.add("clickable"); t.addEventListener("click", close);
+          const tip = svg("title"); tip.textContent = "Click to close this cluster"; t.append(tip);
+          const chip = svg("g", { class: "kclose", transform: `translate(${area.cx - 34},${y0 - 30 - 15 * cfg.labelSize - 24})` });
+          chip.append(svg("rect", { width: 68, height: 20, rx: 10 }));
+          const ct = svg("text", { x: 34, y: 14, "text-anchor": "middle" }); ct.textContent = "✕ close"; chip.append(ct);
+          chip.addEventListener("click", (ev) => { ev.stopPropagation(); close(); });
+          names.append(chip);
+        }
       }
     });
     g.append(glows);
@@ -237,7 +249,7 @@ const Knowledge = {
         ng.addEventListener("click", (ev) => { ev.stopPropagation(); card.style.display = "none"; this.open.add(c.id); this.redrawAround(G, c.id); });
         ng.addEventListener("mouseenter", () => {
           this.highlight(it.key);
-          showCard(ng, [el("b", {}, c.name), el("div", { class: "muted" }, `${c.size} concepts · click to open`),
+          showCard(ng, [el("b", {}, c.name), el("div", { class: "muted" }, `${c.size} concepts · click to open · double-click empty space to close`),
             el("div", {}, "Foundations: " + c.foundations.join(", ")),
             el("div", { class: "row" }, ...URGENCY.filter((s) => c.status_counts[s]).map((s) => el("span", {}, pill(s), ` ${c.status_counts[s]}`)))]);
         });
@@ -256,6 +268,15 @@ const Knowledge = {
       ng.addEventListener("mouseleave", () => { this.highlight(null); card.style.display = "none"; });
       g.append(ng); G.nodeEls[it.key] = ng; G.pos[it.key] = { x: it.x, y: it.y };
     }
+    // double-click on empty space: close the open cluster there; outside every open cluster, close them all
+    root.addEventListener("dblclick", (ev) => {
+      if (cfg.detail === "all" || ev.target.closest(".node, .kclose, .clickable")) return;
+      const r = root.getBoundingClientRect(), s = G.state;
+      const x = (ev.clientX - r.left - s.tx) / s.k, y = (ev.clientY - r.top - s.ty) / s.k;
+      const hit = this.openAreas.find((a) => ((x - a.cx) / a.rx) ** 2 + ((y - a.cy) / a.ry) ** 2 <= 1);
+      if (hit) { this.open.delete(hit.id); this.redrawAround(G, "C:" + hit.id); }
+      else if (this.open.size) { this.open.clear(); this.redraw(); }
+    });
     wrap.append(card, this.panel());
     G.finish(root);
     if (!keepView) requestAnimationFrame(() => G.fit());
