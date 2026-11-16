@@ -27,8 +27,16 @@ class Config:
         "extract": "agy:gemini-3.8-flash-low",   # once per file, cached; local alternative: ollama:qwen2.5:14b
         "judge": "ollama:qwen3.5:9b",
         "group": "agy:gemini-3.8-flash-low",     # claims -> concepts + topics, one call per file, cached
-        "relate": "agy:gemini-3.8-flash-low",    # prerequisite direction for candidate pairs, batched
+        # Sync Knowledge (ingest_method v3): a smart model maps the document, a medium one writes the atomic notes,
+        # the smart one decides identity and links (stage 4, across every course).
+        "structure": "agy:gemini-4-argon-medium",
+        "write": "agy:gemini-4-hydrogen-medium",
+        "relate": "agy:gemini-4-argon-medium",   # prerequisite direction for candidate pairs, batched
     })
+    ingest_method: str = "v3"                   # "v3": structure -> write -> organize; "v2": extract -> group -> relate
+    # Stage 1 (offline lecture pipeline) on THIS PC — set in %LOCALAPPDATA%/study-engine/pc.json, never synced
+    lecture_pipeline: str = ""                  # folder holding the pipeline's ingest.py
+    lecture_python: str = ""                    # its Python (CUDA, Whisper)
     ollama_url: str = "http://127.0.0.1:11434"
     embed_model: str = "qwen3-embedding:8b"
     # Matching thresholds (cosine). Calibrated on bench/embed_pairs.py: unrelated <= 0.35, same idea >= 0.65.
@@ -38,7 +46,10 @@ class Config:
     passage_chars: int = 1800                   # passage size for a local extract model
     passage_chars_cloud: int = 6000             # agy adds ~13k tokens of overhead per call: fewer, larger passages
     # Read-only node sources (course atomic notes), relative to the Magistrale folder; first file per slug wins.
-    atomic_globs: list = field(default_factory=lambda: ["Material/*/Atomic Notes/*.md"])
+    # Notes live in Material/<course>/01_Study/Notes/{Raw,Atomic,Full} Notes since 2026-11-16 (the old course-root
+    # layout is still read so nothing disappears if a folder is left behind).
+    atomic_globs: list = field(default_factory=lambda: ["Material/*/01_Study/Notes/Atomic Notes/*.md",
+                                                         "Material/*/Atomic Notes/*.md"])
     note_type: str = "Basilare"
     front_field: str = "Fronte"
     back_field: str = "Retro"
@@ -105,7 +116,8 @@ def _workspace_above(start: Path):
 
 
 # Settings that must be the same on every PC live in the synced workspace, not in a per-PC config.json.
-SHARED_KEYS = {"agy_project", "teach_model", "models", "dry_run"}
+SHARED_KEYS = {"agy_project", "teach_model", "models", "dry_run", "ingest_method"}
+PC_KEYS = {"lecture_pipeline", "lecture_python"}             # paths that exist on one PC only
 
 
 def _apply(cfg, data, source, allowed=None):
@@ -133,4 +145,7 @@ def load(path: Path | None = None) -> Config:
     shared = cfg.shared_dir / "settings.json"               # every PC (synced with the workspace)
     if shared.is_file():
         _apply(cfg, json.loads(shared.read_text(encoding="utf-8")), str(shared), SHARED_KEYS)
+    pc = cfg.data_dir / "pc.json"                           # this PC only, outside the repo and the Drive folder
+    if pc.is_file() and not cfg.db_file:
+        _apply(cfg, json.loads(pc.read_text(encoding="utf-8")), str(pc), PC_KEYS)
     return cfg

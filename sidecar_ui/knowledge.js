@@ -20,6 +20,114 @@ const BOX = { macroW: 210, macroH: 130, pad: 34, gapX: 46, gapY: 80 };
 const GEOMETRY = ["detail", "shape", "repulsion", "linkLength", "gravity", "direction", "spacing", "nodeSize", "labelSize"];
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && Knowledge.sel) Knowledge.clearEdge(); });
 
+/** "Sync Knowledge": what is new in every course, stage by stage (inventory only; no model calls). */
+const KnowledgeSync = {
+  STAGES: [
+    ["1", "Offline lectures", "video (or audio) + slides → raw notes, on this PC (Whisper, slide matching, local vision)"],
+    ["2", "Structure", "Argon reads the new raw notes / slides → the topics and concepts they introduce"],
+    ["3", "Atomic concepts", "Hydrogen writes each concept: definition, theorem, algorithm… with prerequisites"],
+    ["4", "Organize", "Argon checks the links and places the concepts in the course graph and in All Knowledge"],
+  ],
+  async open() {
+    const wrap = Graph.els.wrap;
+    wrap.querySelector(".drawer")?.remove();
+    const dr = el("div", { class: "drawer wide" }, el("span", { class: "muted" }, "scanning Material/…"));
+    wrap.append(dr);
+    let r;
+    try { r = await api("GET", "/knowledge/inventory"); } catch (e) { dr.replaceChildren(); return err(dr, e); }
+    const t = r.totals;
+    const count = (n, what) => `${n} ${what}`;
+    const rows = r.courses.filter((c) => c.lectures || c.slides_new.length || c.concepts || c.misrouted.length);
+    const work = (c) => c.to_transcribe.length + c.raw_new.length + (c.source === "slides" ? c.slides_new.length : 0);
+    const picks = new Map();
+    const pick = (c) => { const cb = el("input", { type: "checkbox", disabled: !work(c), title: work(c) ? "include in this Sync" : "nothing new" }); picks.set(c.course, cb); return cb; };
+    const controls = this.controls(picks);
+    dr.replaceChildren(
+      el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
+      el("h3", {}, "Sync Knowledge"),
+      el("ol", { class: "stages" }, ...this.STAGES.map(([n, name, what]) => el("li", {}, el("b", {}, name), el("span", { class: "muted" }, ` — ${what}`)))),
+      el("div", { class: "row" },
+        el("span", { class: "pill" }, count(t.to_transcribe, "lectures to transcribe")),
+        el("span", { class: "pill" }, count(t.raw_new, "raw notes not in the graph")),
+        el("span", { class: "pill" }, count(t.slides_new, "slide decks not in the graph")),
+        t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : ""),
+      el("table", { class: "inv" },
+        el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts"].map((h) => el("th", {}, h))),
+        ...rows.map((c) => el("tr", {},
+          el("td", {}, pick(c)),
+          el("td", {}, c.course, c.misrouted.length ? el("div", { class: "warn" }, `⚠ ${c.misrouted.length} raw notes here belong to ${c.misrouted[0].belongs_to}`) : "",
+            c.source === "slides" ? el("div", { class: "muted" }, "no recordings: slides only") : "",
+            c.skipped_recordings?.length ? el("div", { class: "warn" }, `⚠ ${c.skipped_recordings.length} recordings in 03_Other/ — the lecture pipeline skips that folder`) : ""),
+          el("td", {}, c.lectures ? `${c.transcribed}/${c.lectures}${c.audio_only ? ` (${c.audio_only} audio)` : ""}` : "—"),
+          el("td", {}, c.to_transcribe.length || "—"),
+          el("td", {}, c.raw_new.length || "—"),
+          el("td", {}, c.slides_new.length || "—"),
+          el("td", {}, c.concepts || "—")))),
+      el("div", { class: "muted" }, "Slide decks are analysed only for courses without recordings (their raw notes already carry the slide text)."),
+      controls);
+    if (this.job) this.watch(this.job, controls);                  // a run in progress: keep showing it
+  },
+
+  /** Estimate → Run → progress → result. Every cloud call is counted before anything runs. */
+  controls(picks) {
+    const box = el("div", { class: "synccontrols" });
+    const chosen = () => [...picks].filter(([, cb]) => cb.checked).map(([c]) => c);
+    const transcribe = el("input", { type: "checkbox", checked: true });
+    const out = el("div", { class: "muted" });
+    const run = el("button", { class: "primary", disabled: true, onclick: async () => {
+      run.disabled = true;
+      try { const job = await api("POST", "/knowledge/sync", { courses: chosen(), transcribe: transcribe.checked }); this.job = job.id; this.watch(job.id, box); }
+      catch (e) { out.textContent = e.message; run.disabled = false; }
+    } }, "Run Sync");
+    const est = el("button", { onclick: async () => {
+      const cs = chosen();
+      if (!cs.length) { out.textContent = "Tick at least one course."; return; }
+      out.textContent = "estimating…";
+      try {
+        const e = await api("GET", "/knowledge/estimate?" + cs.map((c) => "course=" + encodeURIComponent(c)).join("&"));
+        const t = e.total, m = e.models;
+        out.replaceChildren(
+          el("div", {}, el("b", {}, `${t.files} files → about ${t.calls} cloud calls`),
+            ` (${t.structure} structure · ${t.write} atomic-concept · ${t.relate} link calls)`),
+          el("div", { class: "muted" }, `models: ${m.structure} · ${m.write} · ${m.relate}`),
+          t.transcribe ? el("div", {}, `${t.transcribe} lectures to transcribe first `,
+            e.stage1_available ? el("span", { class: "muted" }, "(on this PC, free, slow: GPU)") : el("span", { class: "warn" }, "— the lecture pipeline is not set up on this PC: they will be skipped")) : "");
+        if (!e.stage1_available) { transcribe.checked = false; transcribe.disabled = true; }
+        run.disabled = false;
+      } catch (err) { out.textContent = err.message; }
+    } }, "Estimate");
+    for (const cb of picks.values()) cb.addEventListener("change", () => { run.disabled = true; });
+    box.append(el("div", { class: "row" }, est, run, el("label", { class: "muted" }, transcribe, " transcribe new lectures first (stage 1)")), out);
+    return box;
+  },
+
+  watch(jid, box) {
+    clearInterval(this.poll);
+    const line = el("div", { class: "syncprogress" }, "starting…");
+    const stop = el("button", { onclick: async () => { await api("POST", "/knowledge/stop", { job: jid }); stop.disabled = true; stop.textContent = "stopping after this file…"; } }, "Stop");
+    box.replaceChildren(el("div", { class: "row" }, line, stop));
+    const STAGE = { transcribe: "1 · transcribing lectures", structure: "2 · Argon maps the knowledge", write: "3 · Hydrogen writes atomic concepts", relate: "4 · Argon organizes links" };
+    this.poll = setInterval(async () => {
+      let j;
+      try { j = await api("GET", `/jobs/${jid}`); } catch (e) { return; }
+      const p = j.progress || {};
+      if (j.state === "running") {
+        line.replaceChildren(el("b", {}, STAGE[p.stage] || p.stage || "starting"), " — ", p.course || "",
+          p.file ? el("div", { class: "muted" }, `file ${p.done + 1}/${p.total}: ${p.file.split("/").pop()}${p.steps ? ` · step ${p.step + 1}/${p.steps}` : ""}`) : "");
+        return;
+      }
+      clearInterval(this.poll); this.job = null;
+      const r = j.report || {};
+      box.replaceChildren(
+        j.state === "error" ? el("div", { class: "error" }, j.error) :
+          el("div", {}, el("b", {}, r.stopped ? "Stopped." : "Sync done."), ` ${r.proposals?.length || 0} new proposals in the Inbox`,
+            r.transcribed?.length ? ` · transcribed: ${r.transcribed.join(", ")}` : ""),
+        ...(r.errors || []).map((e) => el("div", { class: "warn" }, e)),
+        el("button", { class: "primary", onclick: () => document.querySelector('#tabs button[data-tab="inbox"]').click() }, "Review in the Inbox"));
+    }, 1500);
+  },
+};
+
 const Knowledge = {
   cfg: (() => { try { return { ...KDEFAULTS, ...JSON.parse(localStorage.getItem("study.kview") || "{}") }; } catch (e) { return { ...KDEFAULTS }; } })(),
   open: new Set(),

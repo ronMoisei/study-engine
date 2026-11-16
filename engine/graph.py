@@ -217,10 +217,21 @@ class Graph:
                 head = p.read_text(encoding="utf-8")[:400]
                 is_concept = re.search(r"^type: concept\s*$", head, re.M) is not None
                 nodes.setdefault(p.stem, _concept_note(p) if is_concept else _graph_note(p))
+        retired = set()                                    # courses re-derived by Sync: old atomic notes hidden
+        try:
+            retired = set(json.loads((cfg.shared_dir / "rederived.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
         for pattern in cfg.atomic_globs:
             for p in sorted(cfg.magistrale.glob(pattern)):
                 if p.stem in nodes:
                     continue
+                if retired:
+                    try:
+                        if p.resolve().relative_to(cfg.material.resolve()).parts[0] in retired:
+                            continue
+                    except ValueError:
+                        pass
                 node, inv = _atomic_note(p)
                 if node and node.statement:
                     nodes[p.stem] = node

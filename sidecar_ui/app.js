@@ -161,7 +161,8 @@ function view() { const v = document.getElementById("view"); v.replaceChildren()
 function err(parent, e) { parent.append(el("div", { class: "error" }, e.message || String(e))); }
 
 // ── tabs ──
-const TABS = { graph: () => Graph.render(), inbox: () => Inbox.home(), review: () => Review.home() };
+const TABS = { knowledge: () => Graph.render("knowledge"), course: () => Graph.render("course"),
+  inbox: () => Inbox.home(), review: () => Review.home() };
 document.getElementById("tabs").addEventListener("click", (ev) => {
   const t = ev.target.closest("button[data-tab]");
   if (!t) return;
@@ -171,13 +172,19 @@ document.getElementById("tabs").addEventListener("click", (ev) => {
 
 // ═════════════════════════════ GRAPH ═════════════════════════════
 const Graph = {
-  state: { group: localStorage.getItem("study.group") || "", focus: null, lateral: true, data: null, tx: 0, ty: 0, k: 1 },
+  state: { group: ALL, focus: null, lateral: true, data: null, tx: 0, ty: 0, k: 1 },
+  mode: "knowledge",                                    // "knowledge" (All Knowledge tab) | "course" (Course tab)
 
-  async render() {
+  async render(mode) {
     const v = view();
     const s = this.state;
+    this.mode = mode || this.mode;
+    s.focus = null;
+    if (this.mode === "knowledge") s.group = ALL;
+    else { let c = ""; try { c = localStorage.getItem("study.course") || ""; } catch (e) { /* storage blocked */ } s.group = c; }
     const bar = el("div", { class: "row" });
-    const sel = el("select", { onchange: () => { s.group = sel.value; s.focus = null; try { localStorage.setItem("study.group", s.group); } catch (e) { /* storage blocked */ } this.load(); } });
+    const sel = el("select", { onchange: () => { s.group = sel.value; s.focus = null; try { localStorage.setItem("study.course", s.group); } catch (e) { /* storage blocked */ } this.load(); } });
+    if (this.mode === "knowledge") sel.style.display = "none";
     const search = el("input", { type: "search", placeholder: "find a concept…", list: "node-names", style: "flex:1;min-width:120px" });
     const names = el("datalist", { id: "node-names" });
     search.addEventListener("change", () => {
@@ -191,6 +198,8 @@ const Graph = {
       if (this.knowledge()) Knowledge.redraw(); else this.draw();
     } }), " lateral links");
     bar.append(sel, search, names, lat);
+    if (this.mode === "knowledge") bar.append(el("button", { class: "primary", title: "find new lectures and material and bring them into the graph",
+      onclick: () => KnowledgeSync.open() }, "⟳ Sync Knowledge"));
     const info = el("div", { class: "row muted" });
     const legend = el("div", { class: "legend muted" }, ...STATUS.map((st) => el("span", { style: `--c: var(--st-${st})` }, st.replace("_", " "))),
       el("span", { style: "--c: transparent; border: 1px dashed var(--s-muted)" }, "course note (read-only)"));
@@ -210,19 +219,18 @@ const Graph = {
     } catch (e) { setStatus(""); return err(this.els.wrap, e); }
     setStatus("");
     const d = s.data;
-    if (!s.focus && !s.group) {                         // first open: pick the largest group instead of everything
+    if (!s.focus && this.mode === "course" && !(s.group in d.groups)) {   // first open / course gone: largest course
       const g = Object.entries(d.groups).sort((a, b) => b[1] - a[1])[0];
       if (g) { s.group = g[0]; return this.load(); }
     }
     const { sel, names, info } = this.els;
-    sel.replaceChildren(el("option", { value: ALL, selected: s.group === ALL && !s.focus }, `All knowledge, by concept (${d.total_nodes})`),
-      ...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
-    if (s.focus) sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`));
+    sel.replaceChildren(...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
+    if (s.focus) { sel.style.display = ""; sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`)); }
     names.replaceChildren(...d.nodes.map((n) => el("option", { value: n.name })));
     const c = d.status_counts;
     info.replaceChildren(`${d.nodes.length} concepts · ${d.levels} levels · `,
       ...STATUS.filter((st) => c[st]).map((st) => el("span", {}, pill(st), ` ${c[st]} `)),
-      s.focus ? el("a", { onclick: () => { s.focus = null; this.load(); } }, " ← whole group") : "");
+      s.focus ? el("a", { onclick: () => this.render() }, this.mode === "knowledge" ? " ← all knowledge" : " ← whole course") : "");
     s.tx = 20; s.ty = 20; s.k = 1;
     this.draw();
     requestAnimationFrame(() => this.home());          // size is only known after layout
@@ -446,7 +454,22 @@ const Inbox = {
     v.append(el("div", { class: "row" }, dom, go), prog, el("h3", {}, "Proposals"));
     let list = [];
     try { list = (await api("GET", "/proposals")).proposals; } catch (e) { return err(v, e); }
-    if (!list.length) v.append(el("div", { class: "muted" }, "None. Analyse a file to get one."));
+    if (!list.length) v.append(el("div", { class: "muted" }, "None. Analyse a file, or run Sync Knowledge, to get one."));
+    const open = list.filter((p) => !p.outdated && p.pending);
+    if (open.length) {
+      const note = el("div", { class: "muted" });
+      const bulk = el("button", { class: "primary", onclick: async () => {
+        bulk.disabled = true; note.textContent = "approving…";
+        try {
+          const s = await api("POST", "/proposals/approve-confident", {});
+          this.home(`Approved ${s.proposals} proposals: ${s.written} concepts written, ${s.extended} notes extended` +
+            (s.held_conflicts ? ` · ${s.held_conflicts} conflicting links held for you` : "") +
+            (s.retired_atomic_courses?.length ? ` · old atomic notes retired for: ${s.retired_atomic_courses.join(", ")}` : "") +
+            (s.errors.length ? ` · errors: ${s.errors.join("; ")}` : ""));
+        } catch (e) { note.textContent = e.message; bulk.disabled = false; }
+      } }, `Approve all confident (${open.length} proposals, ${open.reduce((n, p) => n + p.pending, 0)} concepts)`);
+      v.append(el("div", { class: "row" }, bulk, el("span", { class: "muted" }, "every pending concept and every link except conflicts; conflicts wait here")), note);
+    }
     for (const p of list) {
       const row = el("div", { class: "proposal" });
       if (p.outdated) {
@@ -454,7 +477,8 @@ const Inbox = {
           el("button", { onclick: async () => { await api("POST", `/proposals/${p.id}/discard`); this.home(); } }, "Discard"));
       } else {
         row.append(el("a", { onclick: () => this.show(p.id) }, p.source.split("/").pop()),
-          el("div", { class: "muted" }, `${p.domain} · ${p.stats.new} new · ${p.stats.covered} covered · ${p.pending ? p.pending + " to review" : "done"} · ${p.created.replace("T", " ")}`));
+          el("div", { class: "muted" }, `${p.domain} · ${p.stats.new} new · ${p.stats.covered} covered · ${p.pending ? p.pending + " to review" : "done"}` +
+            `${p.held ? ` · ` : ""}`, p.held ? el("span", { class: "warn" }, `${p.held} links held`) : "", ` · ${p.created.replace("T", " ")}`));
       }
       v.append(row);
     }
@@ -519,6 +543,25 @@ const Inbox = {
         }
       }
       v.append(d);
+    }
+    if (p.held_conflicts?.length) {                     // links set aside by bulk approval: decide one by one
+      const held = el("div", { class: "item" }, el("h4", {}, `Held links (${p.held_conflicts.length}) — conflicts with lecture or topic order`));
+      const boxes = p.held_conflicts.map((h) => {
+        const cb = el("input", { type: "checkbox" });
+        held.append(el("div", { class: "edge-row" }, cb, ` ${h.key[0]} `, el("b", {}, h.key[1].replace("_", " ")), ` ${h.key[2]}`,
+          ...(h.reasons || []).map((x) => el("div", { class: "warn indent" }, "⚠ " + x))));
+        return [cb, h.key];
+      });
+      const msg = el("div", { class: "muted" });
+      held.append(el("button", { onclick: async () => {
+        const accept = boxes.filter(([cb]) => cb.checked).map(([, k]) => k);
+        if (!accept.length) return;
+        try {
+          const r = await api("POST", `/proposals/${pid}/conflicts`, { accept });
+          this.show(pid, `Accepted ${r.accepted.length} links` + (r.refused.length ? ` · refused: ${r.refused.map((x) => x.reason).join("; ")}` : ""));
+        } catch (e) { msg.textContent = e.message; }
+      } }, "Accept checked links"), msg);
+      v.append(held);
     }
     const bar = el("div", { class: "row bar" });
     const act = async (fn) => { try { await fn(); } catch (e) { bar.append(el("span", { class: "error" }, e.message)); } };

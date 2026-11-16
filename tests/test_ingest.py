@@ -68,7 +68,8 @@ def make_env(material_text=MATERIAL):
     (tmp / "Material" / "Course" / "Atomic Notes" / "degree_matrix.md").write_text(ATOMIC_NOTE, encoding="utf-8")
     src = tmp / "Material" / "lecture.md"
     src.write_text(material_text, encoding="utf-8")
-    cfg = Config(magistrale=tmp, provider="stub", db_file=str(tmp / "e.sqlite3"), sim_floor=0.1, passage_chars=5000)
+    cfg = Config(magistrale=tmp, provider="stub", db_file=str(tmp / "e.sqlite3"), sim_floor=0.1, passage_chars=5000,
+                 ingest_method="v2")                     # the extract/group pipeline these tests were written for
     store = Store(cfg.db_path)
     return cfg, store, Router(cfg, store), FakeEmbedder(), src
 

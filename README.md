@@ -216,6 +216,23 @@ python study.py calls [--last N]               # every model call: job, model, o
 
 Flags everywhere: `--stub` (offline stand-in models) · `--dry-run` (never rate or add in Anki).
 
+## Sync Knowledge (All Knowledge tab)
+
+Course by course, the panel shows what is new, estimates the cloud calls, runs, and resumes where it stopped
+(`engine/knowledge_sync.py`, `engine/syncrun.py`):
+
+| Stage | Model (config `models`) | Does | Checked by code |
+|---|---|---|---|
+| 1 offline | none, this PC's GPU | lectures without raw notes → `01_Study/Notes/Raw Notes/<lecture>/` (the local lecture pipeline; set its folder and Python in `%LOCALAPPDATA%/study-engine/pc.json`) | the pipeline's checkpoints |
+| 2 structure | `structure`: Gemini 4 Argon | reads a whole raw note (or, for a course without recordings, a slide deck) → the concepts it teaches, each anchored by a verbatim quote, with topics and named prerequisites | quote must be in the source |
+| 3 atomic concepts | `write`: Gemini 4 Hydrogen | each concept → definition + up to 6 propositions, every one quoted | unquoted definitions and propositions dropped |
+| 4 organize | `relate`: Gemini 4 Argon | embedding neighbours across **all** courses + the prerequisites Argon named → same / requires / contrasts / analogue | vetoes (loops, lecture and topic order), shortcuts removed |
+
+Each file becomes one Inbox proposal. **Approve all confident** writes every pending concept and every link except
+conflicts; conflicts are held in the proposal until you accept or ignore them. When every raw note of a course has an
+approved proposal, the course's old atomic notes (written by the earlier process-material pipeline) are retired from
+the graph (`.study/rederived.json`). One PC runs a Sync at a time (`.study/sync.lock`).
+
 ## Material → concept graph (ingest)
 
 | Step | Who | What |

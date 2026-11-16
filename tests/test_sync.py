@@ -69,6 +69,48 @@ class DeviceSync(unittest.TestCase):
                 config.load(Path(tempfile.mkdtemp()) / "none.json")
 
 
+class Inventory(unittest.TestCase):
+    def test_new_material_and_misrouted_raw_notes(self):
+        from engine import knowledge_sync
+        cfg, _ = workspace()
+        a = cfg.material / "A - Course A"
+        b = cfg.material / "B - Course B"
+        (a / "Lectures").mkdir(parents=True)
+        (b / "Lectures").mkdir(parents=True)
+        (a / "Slides").mkdir()
+        for name in ("A 1", "A 2"):
+            (a / "Lectures" / f"{name}.mp4").write_bytes(b"x")
+        (b / "Lectures" / "B 1.mp4").write_bytes(b"x")
+        (a / "Lectures" / "A 1_enhanced.mp3").write_bytes(b"x")        # pipeline artefact, not a lecture
+        (a / "Slides" / "deck.pdf").write_bytes(b"%PDF")
+        for course, name in ((a, "A 1"), (a, "B 1")):                   # "B 1" landed in course A by mistake
+            d = course / "Raw Notes" / name
+            d.mkdir(parents=True)
+            (d / f"{name}_Raw_Notes.md").write_text("notes", encoding="utf-8")
+        r = {c["course"]: c for c in knowledge_sync.inventory(cfg)["courses"]}
+        self.assertEqual((r["A - Course A"]["lectures"], r["A - Course A"]["to_transcribe"]), (2, ["A 2"]))
+        self.assertEqual(r["A - Course A"]["raw_new"], ["A - Course A/Raw Notes/A 1/A 1_Raw_Notes.md"])
+        self.assertEqual(r["A - Course A"]["slides_new"], ["A - Course A/Slides/deck.pdf"])
+        self.assertEqual(r["A - Course A"]["misrouted"], [{"lecture": "B 1", "belongs_to": "B - Course B"}])
+        self.assertEqual(r["B - Course B"]["to_transcribe"], [])          # transcribed, just in the wrong folder
+
+    def test_reads_the_01_study_notes_layout_and_skips_03_other(self):
+        from engine import knowledge_sync
+        cfg, _ = workspace()
+        c = cfg.material / "C - Course C"
+        (c / "01_study" / "Lectures").mkdir(parents=True)
+        (c / "03_Other" / "Lezioni").mkdir(parents=True)
+        (c / "01_study" / "Lectures" / "C 1.mp4").write_bytes(b"x")
+        (c / "03_Other" / "Lezioni" / "C old.mp4").write_bytes(b"x")
+        d = c / "01_study" / "Notes" / "Raw Notes" / "C 1"
+        d.mkdir(parents=True)
+        (d / "C 1_Raw_Notes.md").write_text("notes", encoding="utf-8")
+        row = knowledge_sync.inventory(cfg)["courses"][0]
+        self.assertEqual((row["lectures"], row["transcribed"], row["to_transcribe"]), (1, 1, []))
+        self.assertEqual(row["raw_new"], ["C - Course C/01_study/Notes/Raw Notes/C 1/C 1_Raw_Notes.md"])
+        self.assertEqual(row["skipped_recordings"], ["C old"])
+
+
 class Project(unittest.TestCase):
     def test_new_conversation_goes_to_the_configured_project(self):
         seen = {}

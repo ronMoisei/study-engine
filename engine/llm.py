@@ -200,6 +200,28 @@ class StubProvider:
                                  "definition_claim": ids[0], "claims": ids, "aliases": []}
                                 for ids in groups.values()],
                    "topics": [{"slug": "general", "title": "General"}]}
+        elif job == "structure":
+            # sentences of every passage; sentences whose first word matches form one concept (like extract+group)
+            groups = {}
+            for p in data["passages"]:
+                for x in re.split(r"(?<=[.!?])\s+|\n+", p["text"]):
+                    x = x.strip()
+                    if len(x.split()) >= 4:
+                        groups.setdefault(x.split()[0].lower(), []).append((p["index"], x))
+            out = {"concepts": [{"title": " ".join(s[0][1].split()[:4]).strip(".,;:"), "kind": "definition",
+                                 "topic": "general", "passage": s[0][0], "quote": s[0][1], "requires": []}
+                                for s in groups.values()][:40],
+                   "topics": [{"slug": "general", "title": "General"}]}
+        elif job == "write":
+            text = "\n".join(p["text"] for p in data["passages"])
+            notes = []
+            for c in data["concepts"]:
+                first = c["introduced_by"].split()[0].lower()
+                same = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text)
+                        if len(x.split()) >= 4 and x.split()[0].lower() == first and x.strip() != c["introduced_by"]]
+                notes.append({"n": c["n"], "definition": c["introduced_by"], "definition_quote": c["introduced_by"],
+                              "aliases": [], "propositions": [{"text": x, "quote": x} for x in same[:6]]})
+            out = {"notes": notes}
         elif job == "relate":
             rels = []
             for p in data["pairs"]:

@@ -122,6 +122,31 @@ class Engine:
         threading.Thread(target=work, daemon=True).start()
         return job
 
+    def start_sync(self, courses, transcribe=True):
+        """Sync Knowledge for the chosen courses, in the background; poll /jobs/<id>."""
+        import time
+        import uuid
+
+        from . import syncrun
+        if not courses:
+            raise MaterialError("choose at least one course")
+        jid = uuid.uuid4().hex[:8]
+        job = {"id": jid, "kind": "sync", "state": "running", "courses": courses, "progress": {}, "report": None,
+               "error": None, "started": time.time(), "stop": False}
+        self.jobs[jid] = job
+
+        def work():
+            try:
+                with self.ingest_lock:
+                    job["report"] = syncrun.run(self.cfg, self.store, self.llm, self.embedder, courses, transcribe,
+                                                progress=lambda d: job.update(progress=d), stop=lambda: job["stop"])
+                job.update(state="done")
+            except Exception as e:  # noqa: BLE001
+                job.update(state="error", error=f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+        return {k: v for k, v in job.items() if k != "stop"}
+
     def session(self, sid):
         s = self.sessions.get(sid)
         if not s:
@@ -217,6 +242,26 @@ def make_handler(engine, token=None):
                                             "project": project, "note": note})
                 if method == "GET" and path == "/health":
                     return self._send(200, engine.health())
+                if method == "GET" and path == "/knowledge/inventory":
+                    from . import knowledge_sync
+                    return self._send(200, knowledge_sync.inventory(engine.cfg))
+                if method == "GET" and path == "/knowledge/estimate":
+                    from . import syncrun
+                    return self._send(200, syncrun.estimate(engine.cfg, query.get("course", [])))
+                if method == "POST" and path == "/knowledge/sync":
+                    b = self._body()
+                    return self._send(200, engine.start_sync(b.get("courses") or [], bool(b.get("transcribe", True))))
+                if method == "POST" and path == "/knowledge/stop":
+                    job = engine.jobs.get(self._body().get("job", ""))
+                    if job:
+                        job["stop"] = True
+                    return self._send(200, {"stopping": bool(job)})
+                if method == "POST" and path == "/proposals/approve-confident":
+                    from . import syncrun
+                    with engine.lock:
+                        out = ingest_mod.approve_confident(engine.cfg, self._body().get("ids") or None)
+                        out["retired_atomic_courses"] = syncrun.update_rederived(engine.cfg)
+                    return self._send(200, out)
                 if method == "GET" and path == "/sync":
                     if q("recheck") or engine.sync_report is None:
                         from . import devicesync
@@ -236,17 +281,23 @@ def make_handler(engine, token=None):
                     return self._send(200, job) if job else self._send(404, {"error": "unknown job"})
                 if method == "GET" and path == "/proposals":
                     return self._send(200, {"proposals": ingest_mod.list_proposals(engine.cfg)})
-                m = re.fullmatch(r"/proposals/([\w-]+)(?:/(apply|plan|discard))?", path)
+                m = re.fullmatch(r"/proposals/([\w-]+)(?:/(apply|plan|discard|conflicts))?", path)
                 if m:
                     pid, act = m.group(1), m.group(2)
                     if method == "GET" and act is None:
                         return self._send(200, ingest_mod.load(engine.cfg, pid))
                     if method == "POST" and act == "apply":
+                        from . import syncrun
                         b = self._body()
                         with engine.lock:
-                            return self._send(200, ingest_mod.apply(
-                                engine.cfg, pid, b.get("accept"), b.get("reject"), b.get("reject_edges"),
-                                b.get("accept_edges")))
+                            out = ingest_mod.apply(engine.cfg, pid, b.get("accept"), b.get("reject"),
+                                                   b.get("reject_edges"), b.get("accept_edges"))
+                            out["retired_atomic_courses"] = syncrun.update_rederived(engine.cfg)
+                            return self._send(200, out)
+                    if method == "POST" and act == "conflicts":
+                        with engine.lock:
+                            return self._send(200, ingest_mod.accept_conflicts(engine.cfg, pid,
+                                                                               self._body().get("accept") or []))
                     if method == "POST" and act == "plan":
                         return self._send(200, ingest_mod.build_plan(engine.cfg, pid))
                     if method == "POST" and act == "discard":

@@ -110,6 +110,13 @@ svg.far .node.dot text { display: none; }
 
 .drawer { position: absolute; top: 0; right: 0; width: min(380px, 92%); height: 100%; overflow-y: auto; background: var(--s-card-bg); border-left: 1px solid var(--s-line); padding: 10px 12px; box-shadow: -6px 0 18px rgba(0,0,0,.25); }
 .drawer .close { float: right; }
+.drawer.wide { width: min(760px, 96%); }
+ol.stages { padding-left: 20px; margin: 4px 0 8px; } ol.stages li { margin: 3px 0; }
+table.inv { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+table.inv th, table.inv td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--s-line); vertical-align: top; }
+table.inv th { color: var(--s-muted); font-weight: 600; }
+.synccontrols { border-top: 1px solid var(--s-line); padding-top: 8px; margin-top: 6px; }
+.syncprogress { flex: 1; }
 .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--s-line); margin-right: 4px; }
 .st { color: #fff; }
 .st-untested { background: var(--st-untested); } .st-in_progress { background: var(--st-in_progress); }
