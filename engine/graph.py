@@ -2,11 +2,12 @@
 
 Two kinds of node
   Graph/<domain>/<slug>.md      writable proposition notes (schema: Agents/skills/knowledge-graph)
-  <course>/atomic/<slug>.md     read-only course atomic notes (process-material pipeline)
+  Material/<course>/Atomic Notes/<slug>.md   read-only course atomic notes (process-material pipeline)
 
 Edge direction: an edge (a, pred, b) is written in note `a` and points at what `a` rests on.
 Vertical predicates form the prerequisite DAG; the rest are lateral.
 """
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -30,6 +31,13 @@ class Node:
     path: Path | None = None
     readonly: bool = False
     edges: list = field(default_factory=list)          # [(predicate, target_id)]
+    topic: str = ""
+    symbols: list = field(default_factory=list)        # LaTeX symbols the note introduces
+    propositions: list = field(default_factory=list)   # [{"text", "source"}] (concept notes)
+    sources: list = field(default_factory=list)
+    pos: tuple | None = None                           # (sequence, ordinal): order of first appearance
+    is_concept: bool = False
+    prerequisite_of: list = field(default_factory=list)   # ids that require this node (stored here)
 
     @property
     def text(self):
@@ -50,8 +58,13 @@ def split_frontmatter(text):
 
 def _scalar(v):
     v = v.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-        v = v[1:-1]
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        try:
+            return json.loads(v)                       # YAML double quotes: JSON-style escapes (\\alpha -> \alpha)
+        except json.JSONDecodeError:
+            return v[1:-1]
+    if len(v) >= 2 and v[0] == v[-1] == "'":
+        return v[1:-1].replace("''", "'")
     return v
 
 
@@ -100,6 +113,24 @@ def _links(values):
 
 # ── loading ──
 
+def position_of_anchor(anchor):
+    """'course/x.pdf#page=12' -> ('course/x.pdf', (12,)); '...#L30-41' -> (file, (30,)). None if no anchor."""
+    m = re.match(r"^(.*)#(?:page=(\d+)|L(\d+))", str(anchor or ""))
+    if not m:
+        return None
+    return (m.group(1), (int(m.group(2) or m.group(3)),))
+
+
+def _concept_note(path):
+    from .notes import parse_concept
+    c = parse_concept(path.read_text(encoding="utf-8"))
+    edges = [("requires", t) for t in c["requires"]] + [tuple(r) for r in c["related"]]
+    return Node(id=path.stem, name=c["title"] or path.stem, statement=c["definition"], kind=c["kind"] or "",
+                domain=c["domain"] or "", aliases=c["aliases"], path=path, edges=edges, topic=c["topic"] or "",
+                propositions=c["propositions"], sources=c["sources"], is_concept=True,
+                prerequisite_of=c["prerequisite_of"],
+                pos=position_of_anchor(c["sources"][0]) if c["sources"] else None)
+
 def _graph_note(path):
     fm, body = split_frontmatter(path.read_text(encoding="utf-8"))
     lines = body.split("\n")
@@ -122,8 +153,11 @@ def _graph_note(path):
         m = PRED_RE.match(l)
         if m:
             edges += [(m.group(1), t.strip()) for t in LINK_RE.findall(m.group(2))]
+    srcs = fm.get("sources") or []
+    srcs = srcs if isinstance(srcs, list) else [srcs]
     return Node(id=path.stem, name=name, statement=" ".join(stmt), kind=str(fm.get("kind", "")),
-                domain=str(fm.get("domain", "")), aliases=list(fm.get("aliases") or []), path=path, edges=edges)
+                domain=str(fm.get("domain", "")), aliases=list(fm.get("aliases") or []), path=path, edges=edges,
+                sources=srcs, pos=position_of_anchor(srcs[0]) if srcs else None)
 
 
 def _atomic_note(path):
@@ -136,9 +170,15 @@ def _atomic_note(path):
     edges = [("requires", t) for t in _links(fm.get("prerequisites") or [])]
     edges += [("contrasts_with", t) for t in _links(fm.get("contrasts_with") or [])]
     inverse = _links(fm.get("implications") or [])         # "implications: [[x]]" means x rests on this note
+    pos = None                                             # id "01VIXWS.03.act2.slug" -> ("01VIXWS", (3, 2))
+    m = re.match(r"^([^.]+)\.(\d+)\.act(\d+)\.", str(fm.get("id", "")))
+    if m:
+        pos = (m.group(1), (int(m.group(2)), int(m.group(3))))
+    syms = fm.get("math_symbols") or []
     node = Node(id=path.stem, name=str(fm.get("title") or path.stem), statement=str(stmt).strip(),
                 kind=str(fm.get("type", "")), domain=str(fm.get("macro_topic", "")),
-                aliases=list(fm.get("aliases") or []), path=path, readonly=True, edges=edges)
+                aliases=list(fm.get("aliases") or []), path=path, readonly=True, edges=edges, pos=pos,
+                symbols=syms if isinstance(syms, list) else [syms])
     return node, inverse
 
 
@@ -151,9 +191,13 @@ class Graph:
         nodes, inverse = {}, []
         if cfg.graph.is_dir():
             for p in sorted(cfg.graph.rglob("*.md")):
-                nodes.setdefault(p.stem, _graph_note(p))
+                if p.name.startswith("_"):                 # _topics.md and other domain files
+                    continue
+                head = p.read_text(encoding="utf-8")[:400]
+                is_concept = re.search(r"^type: concept\s*$", head, re.M) is not None
+                nodes.setdefault(p.stem, _concept_note(p) if is_concept else _graph_note(p))
         for pattern in cfg.atomic_globs:
-            for p in sorted(cfg.vault.glob(pattern)):
+            for p in sorted(cfg.magistrale.glob(pattern)):
                 if p.stem in nodes:
                     continue
                 node, inv = _atomic_note(p)
@@ -161,6 +205,8 @@ class Graph:
                     nodes[p.stem] = node
                     inverse += [(t, p.stem) for t in inv]
         g = cls(nodes)
+        for n in list(nodes.values()):                     # "prerequisite_of" stored in n: target requires n
+            inverse += [(t, n.id) for t in n.prerequisite_of]
         for src, dst in inverse:                           # src requires dst
             if src in nodes and ("requires", dst) not in nodes[src].edges:
                 nodes[src].edges.append(("requires", dst))
@@ -189,6 +235,20 @@ class Graph:
                 continue
             seen.add(cur)
             stack += self.requires(cur, extra)
+        return False
+
+    def order_conflict(self, src, dst, pos=None):
+        """True if `dst` (the prerequisite) first appears strictly AFTER `src` in the same sequence (course or file).
+        On the existing course notes this never happens for a real prerequisite. `pos`: {id: pos} for new nodes."""
+        pa = (pos or {}).get(src) or (self.nodes[src].pos if src in self.nodes else None)
+        pb = (pos or {}).get(dst) or (self.nodes[dst].pos if dst in self.nodes else None)
+        return bool(pa and pb and pa[0] == pb[0] and pb[1] > pa[1])
+
+    def transitive_redundant(self, src, dst, extra=None):
+        """True if dst is already reachable from src through some other vertical path."""
+        for mid in self.requires(src, extra):
+            if mid != dst and self.reaches(mid, dst, extra):
+                return True
         return False
 
     def would_cycle(self, src, dst, extra=None):

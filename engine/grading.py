@@ -77,7 +77,13 @@ INPUT_JSON:
 """
 
 
+JSON_LATEX_RULE = ("\nYour output is JSON: inside JSON strings every LaTeX backslash must be doubled "
+                   "(write \\\\frac, \\\\alpha, \\\\times), or the formula is corrupted.\n\n")
+
+
 def prompt(template, data):
+    head, sep, _ = template.rpartition("INPUT_JSON:")
+    template = head + JSON_LATEX_RULE + sep + "\n" if sep else template
     return template + json.dumps(data, ensure_ascii=False, indent=1)
 
 

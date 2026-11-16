@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "study-panel",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["study.py", "serve"],
+      "port": 8770
+    }
+  ]
+}

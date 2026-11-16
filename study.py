@@ -5,6 +5,7 @@
   python study.py review [--deck D] [--limit N]   terminal review (same engine, in-process)
   python study.py decks                      list Anki decks
   python study.py install-plugin             copy the Obsidian plugin into the vault
+  python study.py deploy                     copy the engine into Magistrale (Drive) + workspace plugin: all PCs
   python study.py calls [--last N]           show logged model calls (job, model, ok, tokens)
 
   python study.py ingest <file> --domain D   material -> proposal (nothing is written to the vault yet)
@@ -92,6 +93,107 @@ def install_plugin(cfg):
     print(f"installed -> {dst}\nIn Obsidian: Settings → Community plugins → enable 'Study Panel' (reload if listed).")
 
 
+def install_sidecar(cfg, study_py=None):
+    """Install the per-PC launcher plugin `study` in ~/.gemini/config/plugins/study/.
+
+    The Antigravity app only loads side panels from plugins in this global folder (a plugin inside a project's
+    .agents/plugins is ignored for panels — tested 2026-11-15), so every PC needs this small manifest once.
+    It starts the engine from `study_py`: by default the copy this command is run from. On a second PC, run it
+    from the Drive copy:  python "G:\\My Drive\\Università\\Magistrale\\Agents\\study-engine\\study.py" install-sidecar
+    Layout mirrors the built-in Swarm plugin: plugin.json · assets/logo.svg · sidecars/panel/sidecar.json.
+    """
+    from pathlib import Path
+
+    from engine import sidecar as sc
+    study_py = Path(study_py or config.REPO / "study.py")
+    root = Path.home() / ".gemini" / "config" / "plugins" / sc.PLUGIN_NAME
+    (root / "assets").mkdir(parents=True, exist_ok=True)
+    (root / "sidecars" / sc.SIDECAR_FOLDER).mkdir(parents=True, exist_ok=True)
+    (root / "plugin.json").write_text(json.dumps(sc.plugin_manifest(), indent=2), encoding="utf-8")
+    (root / "assets" / "logo.svg").write_text(sc.LOGO_SVG, encoding="utf-8")
+    m = sc.manifest(cfg, sys.executable, study_py)            # this PC's Python, the engine copy to run
+    (root / "sidecars" / sc.SIDECAR_FOLDER / "sidecar.json").write_text(json.dumps(m, indent=2, ensure_ascii=False),
+                                                                        encoding="utf-8")
+    (root / "README.md").write_text("# Study\n\nLauncher for the study engine side panel. Engine: "
+                                    f"{study_py}\nReinstall with `python study.py install-sidecar`.\n",
+                                    encoding="utf-8")
+    old = Path.home() / ".gemini" / "config" / "sidecars" / "study-engine"     # earlier standalone location
+    if (old / "sidecar.json").is_file():
+        (old / "sidecar.json").unlink()
+        try:
+            old.rmdir()
+        except OSError:
+            pass
+    print(f"installed plugin '{sc.PLUGIN_NAME}' -> {root}")
+    print(f"  sidecar: {m['command']} {' '.join(m['args'])}")
+    print("In the Antigravity app: Customizations -> plugins -> Study (enable), then the + in the side pane.")
+
+
+DEPLOY_FILES = ["study.py", "requirements.txt", "README.md", "config.example.json"]
+DEPLOY_DIRS = ["engine", "sidecar_ui"]
+
+
+def deploy(cfg):
+    """Make the panel available on every PC that syncs the Magistrale folder (Google Drive):
+
+      Magistrale/Agents/study-engine/        runtime copy of the engine (no tests, no git) — synced by Drive
+      Magistrale/.agents/plugins/study/      workspace plugin with the sidecar — loaded when the Magistrale
+                                             project is open in Antigravity, on any PC
+      Magistrale/.study/proposals/           Inbox proposals, shared between PCs
+    Development stays in this git repo; run `deploy` again after changing the code.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    from engine import sidecar as sc
+    if config._workspace_above(config.REPO):
+        sys.exit("deploy: run it from the development repo, not from the deployed copy")
+    target = cfg.magistrale / "Agents" / "study-engine"
+    target.mkdir(parents=True, exist_ok=True)
+    for d in DEPLOY_DIRS:
+        if (target / d).exists():
+            shutil.rmtree(target / d)
+        shutil.copytree(config.REPO / d, target / d, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for f in DEPLOY_FILES:
+        if (config.REPO / f).is_file():
+            shutil.copy2(config.REPO / f, target / f)
+    try:
+        rev = subprocess.run(["git", "-C", str(config.REPO), "describe", "--always", "--dirty"], capture_output=True,
+                             text=True).stdout.strip() or "no git"
+    except OSError:
+        rev = "no git"
+    import time
+    (target / "DEPLOYED.txt").write_text(f"deployed {time.strftime('%Y-%m-%d %H:%M')} from {config.REPO} ({rev})\n"
+                                         "Do not edit here: change the repo and run `python study.py deploy`.\n",
+                                         encoding="utf-8")
+
+    # A plugin inside the project's .agents/plugins is not loaded as a side panel by the app: remove the one an
+    # earlier deploy created, and point THIS PC's global launcher at the Drive copy instead.
+    workspace_plugin = cfg.magistrale / ".agents" / "plugins" / sc.PLUGIN_NAME
+    if (workspace_plugin / "plugin.json").is_file():
+        shutil.rmtree(workspace_plugin, ignore_errors=True)
+        try:
+            workspace_plugin.parent.rmdir()                    # only if now empty
+        except OSError:
+            pass
+
+    moved = 0                                                  # proposals made before they were shared
+    old = cfg.data_dir / "proposals"
+    if old.is_dir():
+        cfg.proposals_dir.mkdir(parents=True, exist_ok=True)
+        for f in old.glob("*.json"):
+            if not (cfg.proposals_dir / f.name).exists():
+                shutil.move(str(f), cfg.proposals_dir / f.name)
+                moved += 1
+
+    print(f"engine  -> {target}  ({rev})")
+    if moved:
+        print(f"moved {moved} proposal(s) to {cfg.proposals_dir}")
+    install_sidecar(cfg, target / "study.py")                  # this PC runs the Drive copy, like every other PC
+    print(f'Other PCs, once:  python "{target / "study.py"}" install-sidecar')
+
+
 def show_calls(cfg, last):
     db = sqlite3.connect(str(cfg.db_path))
     rows = db.execute("SELECT id, datetime(ts,'unixepoch','localtime'), session, job, model, ok, usage, duration_ms, "
@@ -103,23 +205,28 @@ def show_calls(cfg, last):
 def print_proposal(p):
     st = p["stats"]
     print(f"proposal {p['id']} · {p['status']} · domain {p['domain']} · {p['source']['name']}")
-    print(f"  {st['claims']} claims: {st['new']} new, {st['existing']} already in the graph, "
-          f"{st['duplicates_in_material']} repeated · {st['dropped_unquoted']} dropped (no supporting quote) · "
-          f"{st['uncovered_passages']} passages without claims · {st['seconds']}s")
+    print(f"  {st['claims']} claims -> {st['concepts']} concepts: {st['new']} new, {st['extends']} extend a note, "
+          f"{st['covered']} already covered, {st['merged']} merged · {st['dropped_unquoted']} claims dropped "
+          f"(no supporting quote) · {st['uncovered_passages']} passages without claims · {st['seconds']}s")
+    lk = st.get("links", {})
+    print(f"  links: {lk.get('confident', 0)} confident, {lk.get('model', 0)} model only, "
+          f"{lk.get('conflict', 0)} conflicts (left out unless accepted) · {st['pairs_judged']} pairs judged")
     print(f"  tokens: {st['usage']['tokens']}")
     for it in p["items"]:
-        c = it["claim"]
-        tag = {"new": "NEW     ", "existing": "EXISTING", "duplicate": "REPEATED"}[it["decision"]]
-        print(f"\n[{it['index']}] {tag} {it['status']:9s} {c['name']}  ({c['anchor'].rsplit('#', 1)[-1]})")
-        print(f"     {c['statement']}")
+        c = it["concept"]
+        print(f"\n[{it['index']}] {it['decision'].upper():8s} {it['status']:9s} {c['title']}  · {c['kind']} · "
+              f"{c['topic']} · {c['anchor'].rsplit('#', 1)[-1]}")
+        print(f"     {c['definition']}")
+        for x in (it["new_propositions"] if it["decision"] == "extends" else c["propositions"]):
+            print(f"       + {x['text']}")
         if it["decision"] == "new":
             print(f"     -> Graph/{p['domain']}/{it['slug']}.md")
-        else:
+        elif it["match"]:
             print(f"     = {it['match']}")
         for e in it["edges"]:
-            print(f"     {e['predicate']} -> {e['to']}")
-        for e in it["incoming"]:
-            print(f"     {e['from']} {e['predicate']} -> this")
+            print(f"     {e['predicate']} -> {e['to']}  [{e['confidence']}] {'; '.join(e['evidence'] + e['conflict'])}")
+        for e in it["required_by"]:
+            print(f"     prerequisite of <- {e['from']}  [{e['confidence']}] {'; '.join(e['evidence'] + e['conflict'])}")
         for e in it["dropped_edges"]:
             print(f"     (dropped: {e['from']} {e['predicate']} {e['to']} — {e['reason']})")
 
@@ -167,7 +274,7 @@ def ingest_cli(cfg, a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "calls",
+    ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "install-sidecar", "deploy", "calls",
                                     "ingest", "proposals", "show", "approve", "plan"])
     ap.add_argument("target", nargs="?", help="file for ingest; proposal id for show/approve/plan")
     ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp")
@@ -178,6 +285,7 @@ def main():
     ap.add_argument("--last", type=int, default=20)
     ap.add_argument("--stub", action="store_true", help="offline deterministic stand-in grader")
     ap.add_argument("--dry-run", action="store_true", help="never rate or add cards in Anki")
+    ap.add_argument("--sidecar", action="store_true", help="serve: run as an Antigravity sidecar (port/token from env)")
     a = ap.parse_args()
 
     cfg = config.load()
@@ -188,13 +296,17 @@ def main():
 
     if a.cmd == "install-plugin":
         return install_plugin(cfg)
+    if a.cmd == "install-sidecar":
+        return install_sidecar(cfg)
+    if a.cmd == "deploy":
+        return deploy(cfg)
     if a.cmd == "calls":
         return show_calls(cfg, a.last)
     if a.cmd in ("ingest", "proposals", "show", "approve", "plan"):
         return ingest_cli(cfg, a)
     engine = Engine(cfg)
     if a.cmd == "serve":
-        return serve(cfg, engine)
+        return serve(cfg, engine, as_sidecar=a.sidecar)
     if a.cmd == "decks":
         try:
             print("\n".join(engine.anki.decks()))

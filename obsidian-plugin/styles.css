@@ -39,3 +39,12 @@
 .study-panel .sp-statement p { margin: 4px 0; }
 .study-panel .sp-edge { font-size: var(--font-ui-small); margin-left: 8px; }
 .study-panel .sp-bar { position: sticky; bottom: 0; background: var(--background-primary); padding: 8px 0; border-top: 1px solid var(--background-modifier-border); }
+.study-panel .sp-item-extends { border-left: 3px solid var(--color-blue); }
+.study-panel .sp-item-covered, .study-panel .sp-item-merged { border-left: 3px solid var(--text-faint); opacity: 0.75; }
+.study-panel .sp-badge-confident { background: rgba(var(--color-green-rgb), 0.25); }
+.study-panel .sp-badge-model { background: var(--background-modifier-hover); }
+.study-panel .sp-badge-conflict { background: rgba(var(--color-red-rgb), 0.25); }
+.study-panel .sp-indent { margin-left: 26px; }
+.study-panel .sp-props { margin: 4px 0; padding-left: 18px; font-size: var(--font-ui-small); }
+.study-panel .sp-dropped summary { cursor: pointer; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.study-panel .sp-back-link { display: inline-block; margin-bottom: 6px; color: var(--text-muted); }

@@ -1,4 +1,4 @@
-"""Append to Obsidian Notes/Learner/evidence.jsonl — same record schema as Agents/skills/learning-harness/log_evidence.py."""
+"""Append to Magistrale/Learner/evidence.jsonl — same record schema as Agents/skills/learning-harness/log_evidence.py."""
 import datetime as dt
 import json
 import re

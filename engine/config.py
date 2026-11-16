@@ -26,7 +26,8 @@ class Config:
         "remedial": "gemini-3.8-flash-medium",
         "extract": "agy:gemini-3.8-flash-low",   # once per file, cached; local alternative: ollama:qwen2.5:14b
         "judge": "ollama:qwen3.5:9b",
-        "link": "agy:gemini-3.8-flash-low",      # one call per file; local models get prerequisite direction wrong
+        "group": "agy:gemini-3.8-flash-low",     # claims -> concepts + topics, one call per file, cached
+        "relate": "agy:gemini-3.8-flash-low",    # prerequisite direction for candidate pairs, batched
     })
     ollama_url: str = "http://127.0.0.1:11434"
     embed_model: str = "qwen3-embedding:8b"
@@ -36,37 +37,54 @@ class Config:
     link_k: int = 8                             # neighbours offered to the link job
     passage_chars: int = 1800                   # passage size for a local extract model
     passage_chars_cloud: int = 6000             # agy adds ~13k tokens of overhead per call: fewer, larger passages
-    # Read-only node sources inside the vault (course atomic notes); first file per slug wins.
-    atomic_globs: list = field(default_factory=lambda: ["2_Full Notes/*/atomic/*.md", "*/atomic/*.md"])
+    # Read-only node sources (course atomic notes), relative to the Magistrale folder; first file per slug wins.
+    atomic_globs: list = field(default_factory=lambda: ["Material/*/Atomic Notes/*.md"])
     note_type: str = "Basilare"
     front_field: str = "Fronte"
     back_field: str = "Retro"
     dry_run: bool = False                       # True: never rate/add in Anki (testing)
+    teach_model: str = "flash"                  # model for a NEW conversation started by "Teach me this"
     db_file: str = ""                           # override engine DB location (tests); "" = default below
 
     @property
     def vault(self) -> Path:
-        return self.magistrale / "Obsidian Notes"
+        """Magistrale itself is the Obsidian vault: course notes, the graph and the learner record in one place."""
+        return self.magistrale
+
+    @property
+    def material(self) -> Path:
+        return self.magistrale / "Material"
 
     @property
     def graph(self) -> Path:
-        return self.vault / "Graph"
+        return self.magistrale / "Graph"
+
+    @property
+    def learner(self) -> Path:
+        return self.magistrale / "Learner"
 
     @property
     def ledger(self) -> Path:
-        return self.vault / "Learner" / "evidence.jsonl"
+        return self.learner / "evidence.jsonl"
 
     @property
     def data_dir(self) -> Path:
         return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "study-engine"
 
     @property
+    def shared_dir(self) -> Path:
+        """Engine state that must follow you across PCs (synced by Google Drive; a dot folder Obsidian ignores)."""
+        return self.magistrale / ".study"
+
+    @property
     def proposals_dir(self) -> Path:
-        return (Path(self.db_file).parent if self.db_file else self.data_dir) / "proposals"
+        if self.db_file:                                    # tests: next to their temporary database
+            return Path(self.db_file).parent / "proposals"
+        return self.shared_dir / "proposals"
 
     @property
     def plans_dir(self) -> Path:
-        return self.vault / "Learner" / "plans"
+        return self.learner / "plans"
 
     @property
     def db_path(self) -> Path:
@@ -75,8 +93,19 @@ class Config:
         return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "study-engine" / "engine.sqlite3"
 
 
+def _workspace_above(start: Path):
+    """The Magistrale folder, when this code runs from a copy deployed inside it (Magistrale/Agents/study-engine)."""
+    for p in start.parents:
+        if (p / "Material").is_dir() and (p / "Agents").is_dir():
+            return p
+    return None
+
+
 def load(path: Path | None = None) -> Config:
     cfg = Config()
+    found = _workspace_above(REPO)
+    if found:                                               # deployed copy: works on any PC, whatever the Drive path
+        cfg.magistrale = found
     path = path or REPO / "config.json"
     if path.is_file():
         data = json.loads(path.read_text(encoding="utf-8"))

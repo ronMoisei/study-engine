@@ -16,8 +16,8 @@ const DEFAULTS = {
   limit: 20,
 };
 const EASE = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
-const DECISION = { new: "NEW", existing: "ALREADY IN GRAPH", duplicate: "REPEATED" };
-const STAGE = { parse: "reading file", extract: "extracting claims", match: "matching against your notes", link: "proposing links" };
+const DECISION = { new: "NEW", extends: "ADDS TO NOTE", covered: "ALREADY COVERED", merged: "MERGED" };
+const STAGE = { parse: "reading file", extract: "extracting claims", group: "grouping into concepts", relate: "deciding concepts and links" };
 
 class StudyView extends ItemView {
   constructor(leaf, plugin) {
@@ -135,8 +135,14 @@ class StudyView extends ItemView {
     for (const p of list) {
       const d = c.createDiv({ cls: "sp-proposal" });
       const a = d.createEl("a", { text: p.source.split("/").pop() });
+      if (p.outdated) {
+        d.createDiv({ cls: "sp-meta", text: "made by the old pipeline — discard and analyse again" });
+        const x = d.createEl("button", { text: "Discard" });
+        x.onclick = async () => { await this.api("POST", `/proposals/${p.id}/discard`); this.renderHome(); };
+        continue;
+      }
       a.onclick = () => this.renderProposal(p.id);
-      d.createDiv({ cls: "sp-meta", text: `${p.domain} · ${p.stats.new} new · ${p.stats.existing} already in graph · ${p.pending ? p.pending + " to review" : "done"} · ${p.created.replace("T", " ")}` });
+      d.createDiv({ cls: "sp-meta", text: `${p.domain} · ${p.stats.new} new · ${p.stats.covered} covered · ${p.pending ? p.pending + " to review" : "done"} · ${p.created.replace("T", " ")}` });
     }
   }
 
@@ -160,67 +166,84 @@ class StudyView extends ItemView {
     const c = this.root();
     let p;
     try { p = await this.api("GET", `/proposals/${pid}`); } catch (e) { return this.renderHome(e.message); }
-    const back = c.createEl("a", { text: "← back", cls: "sp-back-link" });
-    back.onclick = () => this.renderHome();
+    this.backLink(c, () => this.renderHome());
     c.createEl("h3", { text: p.source.name.split("/").pop() });
     const st = p.stats;
-    c.createDiv({ cls: "sp-meta", text: `${p.domain} · ${st.claims} claims: ${st.new} new, ${st.existing} already in graph, ${st.duplicates_in_material} repeated · ${st.dropped_unquoted} dropped (no supporting quote) · ${st.seconds}s` });
+    c.createDiv({ cls: "sp-meta", text: `${p.domain} · ${st.claims} claims → ${st.concepts} concepts: ${st.new} new, ${st.extends} extend a note, ${st.covered} already covered, ${st.merged} merged · ${st.dropped_unquoted} claims dropped (no supporting quote)` });
+    const lk = st.links || {};
+    c.createDiv({ cls: "sp-meta", text: `links: ${lk.confident || 0} confident · ${lk.model || 0} model only · ${lk.conflict || 0} conflicts · ${st.pairs_judged} pairs judged` });
     const t = (st.usage && st.usage.tokens) || {};
-    c.createDiv({ cls: "sp-meta", text: `cloud tokens: ${t.total_tokens || 0} · local tokens: ${(t.local_prompt_tokens || 0) + (t.local_output_tokens || 0)}` });
+    c.createDiv({ cls: "sp-meta", text: `cloud tokens ${t.total_tokens || 0} · local tokens ${(t.local_prompt_tokens || 0) + (t.local_output_tokens || 0)} · ${st.seconds}s` });
+    if (p.new_topics && p.new_topics.length) c.createDiv({ cls: "sp-meta", text: `new topics: ${p.new_topics.map((x) => x.title).join(", ")}` });
     if (note) c.createDiv({ cls: "sp-note", text: note });
 
-    const boxes = new Map();
+    const items = new Map();   // index -> checkbox
+    const links = [];          // {cb, key: [from, predicate, to], conflict}
+    const linkRow = (parent, e, from, to, label) => {
+      const row = parent.createDiv({ cls: `sp-edge sp-conf-${e.confidence}` });
+      const cb = row.createEl("input", { type: "checkbox" });
+      cb.checked = e.accepted;
+      links.push({ cb, key: [from, e.predicate, to], conflict: e.confidence === "conflict" });
+      row.createSpan({ cls: `sp-badge sp-badge-${e.confidence}`, text: e.confidence });
+      row.appendText(" " + label + " ");
+      this.nodeLink(row, label === "prerequisite of" ? from : to);
+      for (const x of e.evidence || []) row.createDiv({ cls: "sp-meta sp-indent", text: "✓ " + x });
+      for (const x of e.conflict || []) row.createDiv({ cls: "sp-itemnote sp-indent", text: "⚠ " + x });
+    };
+
     for (const it of p.items) {
+      const cpt = it.concept;
       const d = c.createDiv({ cls: `sp-item sp-item-${it.decision} sp-st-${it.status}` });
       const head = d.createDiv({ cls: "sp-item-head" });
-      if (it.status === "pending") {
-        const cb = head.createEl("input", { type: "checkbox" });
-        cb.checked = true;
-        boxes.set(it.index, cb);
-      }
-      head.createSpan({ cls: `sp-badge sp-badge-${it.decision}`, text: DECISION[it.decision] });
-      head.createSpan({ cls: "sp-item-name", text: " " + it.claim.name });
-      if (it.status !== "pending") head.createSpan({ cls: "sp-meta", text: ` · ${it.status}` });
-      await this.md(d.createDiv({ cls: "sp-statement" }), it.claim.statement);
-      d.createDiv({ cls: "sp-quote", text: `“${it.claim.quote}” — ${it.claim.anchor.split("/").pop()}` });
-      if (it.decision === "new") {
-        d.createDiv({ cls: "sp-meta", text: `→ Graph/${p.domain}/${it.slug}.md · ${it.claim.kind}` });
-      } else if (it.match) {
+      const writable = it.status === "pending" && (it.decision === "new" || it.decision === "extends");
+      if (writable) { const cb = head.createEl("input", { type: "checkbox" }); cb.checked = true; items.set(it.index, cb); }
+      head.createSpan({ cls: `sp-badge sp-badge-${it.decision}`, text: DECISION[it.decision] || it.decision });
+      head.createSpan({ cls: "sp-item-name", text: " " + cpt.title });
+      head.createSpan({ cls: "sp-meta", text: ` · ${cpt.kind} · ${cpt.topic}${it.status !== "pending" ? " · " + it.status : ""}` });
+      if (it.match) {
         const m = d.createDiv({ cls: "sp-meta" });
-        m.appendText(it.decision === "existing" ? "same idea as " : "same as new node ");
+        m.appendText(it.decision === "merged" ? "merged into " : it.decision === "extends" ? "adds to " : "already covered by ");
         this.nodeLink(m, it.match);
-        const hit = (it.candidates || []).find((x) => x.same);
-        if (hit) m.appendText(` (similarity ${hit.sim})`);
       }
-      for (const e of it.edges) {
-        const l = d.createDiv({ cls: "sp-edge" });
-        l.appendText(`${e.predicate.replace("_", " ")} → `);
-        this.nodeLink(l, e.to);
+      await this.md(d.createDiv({ cls: "sp-statement" }), cpt.definition);
+      d.createDiv({ cls: "sp-quote", text: `“${cpt.quote}” — ${cpt.anchor.split("/").pop()}` });
+      const props = it.decision === "extends" ? it.new_propositions : (it.decision === "new" ? cpt.propositions : []);
+      if (props && props.length) {
+        const ul = d.createEl("ul", { cls: "sp-props" });
+        for (const x of props) await this.md(ul.createEl("li"), `${x.text} *(${x.source.split("#").pop()})*`);
       }
-      for (const e of it.incoming || []) {
-        const l = d.createDiv({ cls: "sp-edge" });
-        this.nodeLink(l, e.from);
-        l.appendText(` ${e.predicate.replace("_", " ")} → this (edits that note)`);
+      if (it.decision === "new") {
+        d.createDiv({ cls: "sp-meta", text: `→ Graph/${p.domain}/${it.slug}.md` });
+        for (const e of it.edges) linkRow(d, e, it.slug, e.to, e.predicate === "requires" ? "requires" : e.predicate.replace("_", " "));
+        for (const e of it.required_by) linkRow(d, e, e.from, it.slug, "prerequisite of");
+        if (it.dropped_edges.length) {
+          const det = d.createEl("details", { cls: "sp-dropped" });
+          det.createEl("summary", { text: `${it.dropped_edges.length} links dropped by the checks` });
+          for (const x of it.dropped_edges) det.createDiv({ cls: "sp-meta", text: `${x.from} ${x.predicate} ${x.to} — ${x.reason}` });
+        }
       }
-      for (const e of it.dropped_edges || []) d.createDiv({ cls: "sp-itemnote", text: `dropped link ${e.from} ${e.predicate} ${e.to}: ${e.reason}` });
     }
 
     if (p.uncovered && p.uncovered.length) {
-      c.createEl("h4", { text: "Passages with no claims" });
-      for (const u of p.uncovered) c.createDiv({ cls: "sp-meta", text: `${u.anchor.split("#").pop()}: ${u.preview}…` });
+      const det = c.createEl("details");
+      det.createEl("summary", { text: `${p.uncovered.length} passages produced no claims` });
+      for (const u of p.uncovered) det.createDiv({ cls: "sp-meta", text: `${u.anchor.split("#").pop()}: ${u.preview}…` });
     }
 
     const bar = c.createDiv({ cls: "sp-row sp-bar" });
     const act = async (fn) => { try { await fn(); } catch (e) { new Notice(e.message); } };
-    if (boxes.size) {
+    if (items.size) {
       bar.createEl("button", { text: "Approve checked", cls: "mod-cta" }).onclick = () => act(async () => {
-        const accept = [...boxes].filter(([, cb]) => cb.checked).map(([i]) => i);
-        if (!accept.length) { new Notice("Nothing checked."); return; }
-        const s = await this.api("POST", `/proposals/${pid}/apply`, { accept });
-        await this.renderProposal(pid, `Written: ${s.written.length} notes · sources added to ${s.sources_added.length} · ${s.dropped_edges.length} links dropped`);
+        const accept = [...items].filter(([, cb]) => cb.checked).map(([i]) => i);
+        if (!accept.length) { new Notice("No concept checked."); return; }
+        const reject_edges = links.filter((l) => !l.cb.checked).map((l) => l.key);
+        const accept_edges = links.filter((l) => l.cb.checked && l.conflict).map((l) => l.key);
+        const s = await this.api("POST", `/proposals/${pid}/apply`, { accept, reject_edges, accept_edges });
+        const msg = `Written ${s.written.length} · extended ${s.extended.length} · ${s.dropped_edges.length} links dropped` + (s.errors.length ? ` · ${s.errors.length} errors: ${s.errors.join("; ")}` : "");
+        await this.renderProposal(pid, msg);
       });
       bar.createEl("button", { text: "Reject unchecked" }).onclick = () => act(async () => {
-        const reject = [...boxes].filter(([, cb]) => !cb.checked).map(([i]) => i);
+        const reject = [...items].filter(([, cb]) => !cb.checked).map(([i]) => i);
         if (!reject.length) { new Notice("Nothing unchecked."); return; }
         await this.api("POST", `/proposals/${pid}/apply`, { accept: [], reject });
         await this.renderProposal(pid, `Rejected ${reject.length}.`);
@@ -228,7 +251,7 @@ class StudyView extends ItemView {
     }
     bar.createEl("button", { text: "Build study plan" }).onclick = () => act(async () => {
       const plan = await this.api("POST", `/proposals/${pid}/plan`);
-      new Notice(`${plan.steps.length} steps, ${plan.to_study} not yet held`);
+      new Notice(`${plan.steps.length} steps, ${plan.to_study} not yet held${plan.warnings.length ? `, ${plan.warnings.length} possible gaps` : ""}`);
       const rel = plan.file.replace(/\\/g, "/").split("/Obsidian Notes/").pop();
       await this.app.workspace.openLinkText(rel, "", true);
     });
@@ -237,6 +260,13 @@ class StudyView extends ItemView {
       await this.renderHome("Proposal discarded. Notes already written stay in the vault.");
     });
   }
+
+  backLink(c, fn) {
+    const a = c.createEl("a", { text: "← back", cls: "sp-back-link" });
+    a.onclick = fn;
+    return a;
+  }
+
 
   // ── review ──
   async renderView(view) {
@@ -247,6 +277,7 @@ class StudyView extends ItemView {
 
   async renderCard(view) {
     const c = this.root();
+    this.backLink(c, () => this.renderHome("Review paused. Cards already answered are rated and logged."));
     c.createDiv({ cls: "sp-meta", text: `${view.position}/${view.total} · ${view.deck} · ${view.node}` });
     await this.md(c.createDiv({ cls: "sp-front" }), view.front);
 
@@ -280,6 +311,7 @@ class StudyView extends ItemView {
 
   async renderResult(view, r) {
     const c = this.root();
+    this.backLink(c, () => this.renderHome("Review paused. Cards already answered are rated and logged."));
     c.createDiv({ cls: "sp-meta", text: `${view.position}/${view.total} · ${view.deck} · ${view.node}` });
     await this.md(c.createDiv({ cls: "sp-front sp-dim" }), view.front);
 

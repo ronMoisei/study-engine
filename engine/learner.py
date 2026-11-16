@@ -1,4 +1,4 @@
-"""Learner state per node, derived from Obsidian Notes/Learner/evidence.jsonl. Categorical on purpose.
+"""Learner state per node, derived from Magistrale/Learner/evidence.jsonl. Categorical on purpose.
 
   misconception  last graded answer wrong with confidence >= 70, or classed structural
   fragile        last graded answer not correct, or correct with confidence < 50, or needing hint rung >= R3

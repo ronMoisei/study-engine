@@ -1,4 +1,4 @@
-"""Local JSON API on 127.0.0.1 for the Obsidian Study panel (stdlib only).
+"""Local JSON API on 127.0.0.1 for the Study side panel (stdlib only).
 
 GET  /health                      engine + Anki status
 GET  /decks                       Anki deck names
@@ -8,10 +8,22 @@ POST /review/<sid>/answer {answer, confidence, idk} -> grading result (includes 
 POST /review/<sid>/next                       -> next view / summary
 GET  /review/<sid>/summary
 POST /ingest {path, domain}                   -> job (background)      GET /jobs/<id>  -> progress
+                                                 path: file, folder or course; domain defaults to the course
+GET  /courses                                 course folders in Material/
 GET  /proposals                               GET /proposals/<id>
 POST /proposals/<id>/apply {accept, reject}   write approved items to the vault
 POST /proposals/<id>/plan                     build the study plan note
 POST /proposals/<id>/discard
+GET  /graph?group=&focus=&around=1            laid-out prerequisite graph with learner status
+GET  /node/<id>                               one concept: definition, links, path, file
+GET  /teach-message?id=&level=&goal=         the message "Teach me this" would send (level 1-5 picks the mode)
+POST /teach {id, level, goal, conversationId} send it to that conversation (or start a new one)
+GET  /learn-message?target=&level=&goal=     Inbox "Start learning": node, file/folder/course, or a topic in words
+POST /learn {target, level, goal, conversationId}
+GET  /                                        the side-panel UI (sidecar_ui/)
+
+Security: binds 127.0.0.1 only; no CORS headers (no web page may call it). In sidecar mode every request except
+the UI's static files must carry the token the app provides (X-Sidecar-Token header or ?token=).
 """
 import json
 import re
@@ -19,6 +31,11 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import mimetypes
+import urllib.parse
+from pathlib import Path
+
+from . import graphview, learn, sidecar
 from . import ingest as ingest_mod
 from .anki import Anki, AnkiError
 from .embed import EmbedError, make_embedder
@@ -26,6 +43,10 @@ from .llm import LLMError, make_provider
 from .material import MaterialError
 from .review import ReviewSession, SessionError
 from .store import Store
+
+# Windows' registry can map .js to text/plain; fix the types the panel needs.
+STATIC_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2",
+                ".svg": "image/svg+xml"}
 
 
 class Engine:
@@ -38,6 +59,7 @@ class Engine:
         self.sessions = {}
         self.jobs = {}
         self.lock = threading.Lock()
+        self.ingest_lock = threading.Lock()
 
     def health(self):
         try:
@@ -55,28 +77,43 @@ class Engine:
         return s.current()
 
     def start_ingest(self, path, domain):
-        """Run the ingest pipeline in a background thread; poll /jobs/<id>."""
+        """Run the ingest pipeline in a background thread; poll /jobs/<id>. `path`: a file, a folder (every
+        .pdf/.md/.txt inside, one proposal per file) or a course name. Domain defaults to the course folder."""
         import time
         import uuid
-        path = ingest_mod.resolve_path(self.cfg, path)
-        if not path.is_file():
-            raise MaterialError(f"file not found: {path}")
-        if not (domain or "").strip():
-            raise MaterialError("a domain is required (e.g. deep-nlp, ml-security)")
+        target = learn.find_material(self.cfg, path) or ingest_mod.resolve_path(self.cfg, path)
+        files = learn.material_files(self.cfg, target)
+        if not files:
+            raise MaterialError(f"no .pdf, .md or .txt files in {target}")
+        if len(files) > learn.MAX_FILES:
+            raise MaterialError(f"{len(files)} files in {target.name}: pick a subfolder (at most {learn.MAX_FILES} "
+                                "per analysis, each costs cloud calls)")
+        domain = (domain or "").strip() or learn.default_domain(self.cfg, target)
+        if not domain:
+            raise MaterialError("a domain is required for material outside Material/<course>/ (e.g. deep-nlp)")
         jid = uuid.uuid4().hex[:8]
-        job = {"id": jid, "state": "running", "stage": "parse", "done": 0, "total": 0, "file": str(path),
-               "proposal": None, "error": None, "started": time.time()}
+        job = {"id": jid, "state": "running", "stage": "parse", "done": 0, "total": 0, "file": str(target),
+               "files": len(files), "file_index": 0, "domain": domain, "proposal": None, "proposals": [],
+               "errors": [], "error": None, "started": time.time()}
         self.jobs[jid] = job
 
         def progress(stage, done, total):
             job.update(stage=stage, done=done, total=total)
 
         def work():
-            try:
-                p = ingest_mod.ingest(self.cfg, self.store, self.llm, self.embedder, path, domain, progress)
-                job.update(state="done", proposal=p["id"], stats=p["stats"])
-            except Exception as e:  # noqa: BLE001
-                job.update(state="error", error=f"{type(e).__name__}: {e}")
+            for k, f in enumerate(files):
+                job.update(file_index=k, current=f.name, stage="parse", done=0, total=0)
+                try:
+                    with self.ingest_lock:               # one file at a time: later files see earlier concepts
+                        p = ingest_mod.ingest(self.cfg, self.store, self.llm, self.embedder, f, domain, progress)
+                    job["proposals"].append(p["id"])
+                    job.update(proposal=p["id"], stats=p["stats"])
+                except Exception as e:  # noqa: BLE001
+                    job["errors"].append(f"{f.name}: {type(e).__name__}: {e}")
+            if job["proposals"]:
+                job.update(state="done")
+            else:
+                job.update(state="error", error="; ".join(job["errors"]) or "nothing analysed")
 
         threading.Thread(target=work, daemon=True).start()
         return job
@@ -88,7 +125,10 @@ class Engine:
         return s
 
 
-def make_handler(engine):
+UI_DIR = Path(__file__).resolve().parents[1] / "sidecar_ui"
+
+
+def make_handler(engine, token=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):        # quiet
             pass
@@ -97,8 +137,7 @@ def make_handler(engine):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -107,16 +146,60 @@ def make_handler(engine):
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
 
-        def do_OPTIONS(self):
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        def _static(self, path):
+            name = "index.html" if path in ("", "/") else path[len("/ui/"):]
+            f = (UI_DIR / name).resolve()
+            if UI_DIR.resolve() not in f.parents or not f.is_file():
+                return self._send(404, {"error": "not found"})
+            body = f.read_bytes()
+            self.send_response(200)
+            ctype = STATIC_TYPES.get(f.suffix) or mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+            self.send_header("Content-Type", ctype
+                             + ("; charset=utf-8" if f.suffix in (".html", ".js", ".css") else ""))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
+
+        def _authorised(self, query):
+            if not token:
+                return True
+            return self.headers.get("X-Sidecar-Token") == token or query.get("token", [None])[0] == token
 
         def _route(self, method):
-            path = self.path.split("?")[0].rstrip("/")
+            raw_path, _, qs = self.path.partition("?")
+            query = urllib.parse.parse_qs(qs)
+            path = raw_path.rstrip("/")
+            if method == "GET" and (path == "" or path.startswith("/ui/")):
+                return self._static(path)
+            if not self._authorised(query):
+                return self._send(401, {"error": "unauthorized"})
+            q = lambda k, d=None: query.get(k, [d])[0]  # noqa: E731
             try:
+                if method == "GET" and path == "/graph":
+                    return self._send(200, graphview.graph_payload(engine.cfg, q("group") or None, q("focus") or None,
+                                                                   int(q("around", "1"))))
+                m = re.fullmatch(r"/node/([\w-]+)", path)
+                if m and method == "GET":
+                    return self._send(200, graphview.node_detail(engine.cfg, m.group(1)))
+                if method == "GET" and path == "/teach-message":
+                    return self._send(200, {"message": graphview.teach_message(engine.cfg, q("id", ""), q("level"),
+                                                                               q("goal"))})
+                if method == "GET" and path == "/learn-message":
+                    return self._send(200, {"message": graphview.learn_message(engine.cfg, q("target", ""),
+                                                                               q("level"), q("goal"))})
+                if method == "GET" and path == "/courses":
+                    return self._send(200, {"courses": learn.courses(engine.cfg)})
+                if method == "POST" and path in ("/teach", "/learn"):
+                    b = self._body()
+                    msg = graphview.teach_message(engine.cfg, b.get("id", ""), b.get("level"), b.get("goal")) \
+                        if path == "/teach" else \
+                        graphview.learn_message(engine.cfg, b.get("target", ""), b.get("level"), b.get("goal"))
+                    if b.get("conversationId"):
+                        out = sidecar.send_message(b["conversationId"], msg)
+                        return self._send(200, {"sent_to": b["conversationId"], "result": out, "message": msg})
+                    out = sidecar.new_conversation(msg, model=engine.cfg.teach_model)
+                    return self._send(200, {"new_conversation": True, "result": out, "message": msg})
                 if method == "GET" and path == "/health":
                     return self._send(200, engine.health())
                 if method == "GET" and path == "/decks":
@@ -141,7 +224,9 @@ def make_handler(engine):
                     if method == "POST" and act == "apply":
                         b = self._body()
                         with engine.lock:
-                            return self._send(200, ingest_mod.apply(engine.cfg, pid, b.get("accept"), b.get("reject")))
+                            return self._send(200, ingest_mod.apply(
+                                engine.cfg, pid, b.get("accept"), b.get("reject"), b.get("reject_edges"),
+                                b.get("accept_edges")))
                     if method == "POST" and act == "plan":
                         return self._send(200, ingest_mod.build_plan(engine.cfg, pid))
                     if method == "POST" and act == "discard":
@@ -165,9 +250,11 @@ def make_handler(engine):
                 return self._send(404, {"error": f"no route {method} {path}"})
             except SessionError as e:
                 return self._send(409, {"error": str(e)})
+            except sidecar.AgentApiError as e:
+                return self._send(502, {"error": str(e)})
             except KeyError as e:
                 return self._send(404, {"error": str(e).strip("'\"")})
-            except MaterialError as e:
+            except (MaterialError, ValueError) as e:
                 return self._send(400, {"error": str(e)})
             except EmbedError as e:
                 return self._send(503, {"error": str(e)})
@@ -188,9 +275,16 @@ def make_handler(engine):
     return H
 
 
-def serve(cfg, engine=None):
+def serve(cfg, engine=None, as_sidecar=False):
     engine = engine or Engine(cfg)
-    httpd = ThreadingHTTPServer((cfg.host, cfg.port), make_handler(engine))
-    print(f"study-engine on http://{cfg.host}:{cfg.port}  provider={engine.llm.name}  dry_run={cfg.dry_run}")
+    token, port = None, cfg.port
+    if as_sidecar:
+        e = sidecar.env()
+        if not e["port"]:
+            raise SystemExit("--sidecar: ANTIGRAVITY_SIDECAR_WEB_PORT is not set; the Antigravity app starts this")
+        port, token = int(e["port"]), e["token"]
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(engine, token))
+    print(f"study-engine on http://127.0.0.1:{port}  sidecar={as_sidecar}  provider={engine.llm.name}  "
+          f"dry_run={cfg.dry_run}", flush=True)
     print(f"ledger: {cfg.ledger}")
     httpd.serve_forever()

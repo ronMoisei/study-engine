@@ -137,11 +137,19 @@ def _text(path, name, limit):
             cur = []
     if cur:
         blocks.append(("\n".join(cur), start, len(lines)))
-    out = []
-    for chunk, a, b in _pack(blocks, limit):
-        chunk = _clean(chunk)
-        if len(chunk) >= MIN_CHARS:
-            out.append([(f"{name}#L{a}-{b}", chunk)])
+    out, cur, size = [], [], 0                                # cur: [(anchor, text)] — one part per paragraph
+    for text, a, b in blocks:
+        text = _clean(text)
+        pieces = [text] if len(text) <= limit else _split_long(text, limit)
+        for piece in pieces:
+            if cur and size + len(piece) > limit:
+                out.append(cur)
+                cur, size = [], 0
+            cur.append((f"{name}#L{a}-{b}", piece))
+            size += len(piece) + 2
+    if cur:
+        out.append(cur)
+    out = [parts for parts in out if sum(len(t) for _, t in parts) >= MIN_CHARS]
     return out, None
 
 

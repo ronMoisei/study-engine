@@ -104,23 +104,35 @@ class AgyProvider:
             t0 = time.time()
             raw, usage, out, err = "", {}, None, None
             try:
+                # The prompt goes in on stdin as one stream-json message: a command-line argument is capped at
+                # ~32k characters on Windows, which a batch of pairs exceeds.
+                message = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n"
                 proc = subprocess.run(
-                    [self.cfg.agy, "-p", prompt, "--model", model, "--json-schema", str(schema_file),
-                     "--output-format", "json", "--disable-slash-commands",
+                    [self.cfg.agy, "-p", "", "--input-format", "stream-json", "--output-format", "stream-json",
+                     "--model", model, "--json-schema", str(schema_file), "--disable-slash-commands",
                      "--print-timeout", f"{self.cfg.agy_timeout_s}s"],
-                    cwd=self.cfg.agy_workdir, capture_output=True, text=True, encoding="utf-8",
+                    input=message, cwd=self.cfg.agy_workdir, capture_output=True, text=True, encoding="utf-8",
                     timeout=self.cfg.agy_timeout_s + 30)
                 raw = (proc.stdout or "") + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
                 if "RESOURCE_EXHAUSTED" in raw or "quota" in raw.lower() and proc.returncode:
                     raise LLMError("agy quota exhausted — retry later or set provider 'stub' in config.json")
-                try:
-                    envelope = json.loads(proc.stdout)
-                except json.JSONDecodeError:
-                    envelope = proc.stdout
-                usage = find_usage(envelope.get("usage", envelope) if isinstance(envelope, dict) else envelope)
-                # agy -p --output-format json returns {status, response, structured_output, usage, ...}
-                structured = envelope.get("structured_output") if isinstance(envelope, dict) else None
-                out = structured if isinstance(structured, dict) and not validate(structured, schema)                     else find_conforming(envelope, schema)
+                envelope = None                            # the last {"event":"result","result":{...}} line
+                for line in (proc.stdout or "").splitlines():
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict) and ev.get("event") == "result":
+                        envelope = ev.get("result")
+                if not isinstance(envelope, dict):
+                    envelope = {}
+                if envelope.get("status") not in (None, "SUCCESS") and envelope.get("error"):
+                    err = f"agy: {envelope['error']}"
+                usage = find_usage(envelope.get("usage", {}))
+                # result: {status, response, structured_output, usage, ...}
+                structured = envelope.get("structured_output")
+                out = structured if isinstance(structured, dict) and not validate(structured, schema) \
+                    else find_conforming(envelope, schema)
                 if out is None:
                     err = f"no schema-conforming JSON in agy output (exit {proc.returncode})"
             except subprocess.TimeoutExpired:
@@ -176,12 +188,35 @@ class StubProvider:
                                "quote": x} for x in sents[:8]]}
         elif job == "judge":
             a, b = self._words(data["a"]), self._words(data["b"])
-            out = {"same_idea": bool(a | b) and len(a & b) / len(a | b) >= 0.6}
-        elif job == "link":
-            names = {n["id"]: n["name"] for n in data["nodes"] + data["new"]}
-            out = {"edges": [{"from": new["id"], "to": cid, "predicate": "requires"}
-                             for new in data["new"] for cid in new["candidates"]
-                             if names[cid].lower() in new["statement"].lower()]}
+            key = schema["required"][0]                    # same_idea or same_concept
+            out = {key: bool(a | b) and len(a & b) / len(a | b) >= 0.6}
+        elif job == "group":
+            # claims whose names share their first word form one concept; first claim defines it
+            groups = {}
+            for c in data["claims"]:
+                groups.setdefault(c["name"].split()[0].lower(), []).append(c["id"])
+            names = {c["id"]: c["name"] for c in data["claims"]}
+            out = {"concepts": [{"title": names[ids[0]], "kind": "definition", "topic": "general",
+                                 "definition_claim": ids[0], "claims": ids, "aliases": []}
+                                for ids in groups.values()],
+                   "topics": [{"slug": "general", "title": "General"}]}
+        elif job == "relate":
+            rels = []
+            for p in data["pairs"]:
+                a, b = p["a"], p["b"]
+                head = lambda t: " ".join(t.lower().split()[:2])  # noqa: E731  (first two words of a title)
+                wa = self._words(a["title"] + " " + a["definition"])
+                wb = self._words(b["title"] + " " + b["definition"])
+                if wa and wb and len(wa & wb) / len(wa | wb) >= 0.6:
+                    r = "same"
+                elif head(b["title"]) in a["definition"].lower():
+                    r = "A_requires_B"
+                elif head(a["title"]) in b["definition"].lower():
+                    r = "B_requires_A"
+                else:
+                    r = "none"
+                rels.append({"pair": p["pair"], "relation": r})
+            out = {"relations": rels}
         else:
             raise LLMError(f"stub: unknown job {job}")
         errs = validate(out, schema)
@@ -272,7 +307,49 @@ class Router:
         prov, model = self.route(job)
         if prov not in self._cache:
             self._cache[prov] = PROVIDERS[prov](self.cfg, self.store)
-        return self._cache[prov].run(job, prompt, schema, session=session, retries=retries, model=model)
+        out = self._cache[prov].run(job, prompt, schema, session=session, retries=retries, model=model)
+        return repair_latex(out)
+
+
+# A model that writes LaTeX with single backslashes inside JSON gets them read as escapes: "\times" arrives as
+# TAB + "imes", "\frac" as FORM FEED + "rac", "\nabla" as NEWLINE + "abla". Put the backslash back when the
+# control character is directly followed by the rest of a LaTeX command.
+_LATEX_TAILS = {
+    "\t": "imes|au|heta|ext|extbf|extit|ilde|op|anh|frac|riangle|o",
+    "\f": "rac|orall|lat",
+    "\b": "eta|ar|ig|egin|f|m|oldsymbol|ullet|inom",
+    "\r": "ho|ight|ightarrow|m|angle|ceil|floor",
+    "\n": "abla|eq|u|ot|orm|ewline|i|exists|ormalsize",
+    "\v": "ec|arepsilon|arphi|dots",
+    "\a": "lpha|pprox",
+}
+_LATEX_RE = {ch: re.compile(re.escape(ch) + r"(?=(?:" + tails + r")(?![a-z]))") for ch, tails in _LATEX_TAILS.items()}
+_MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.S)
+# The opposite mistake: escaping twice, so "\\sum" arrives. Inside math a doubled backslash directly before a
+# command letter or a spacing mark is never a line break, so it becomes a single one.
+_DOUBLED = re.compile(r"\\\\(?=[A-Za-z,;:!])")
+
+
+def collapse_doubled(text):
+    return _MATH.sub(lambda m: _DOUBLED.sub(lambda _: "\\", m.group(0)), text)
+
+
+def repair_latex(obj):
+    if isinstance(obj, str):
+        if "$" not in obj and "\\" not in obj:
+            return obj
+        for ch, rx in _LATEX_RE.items():
+            if ch == "\n":                               # only inside math, newlines are real text otherwise
+                obj = _MATH.sub(lambda m: rx.sub(r"\\" + "n", m.group(0)), obj)
+            else:
+                obj = rx.sub(lambda m, c=ch: "\\" + {"\t": "t", "\f": "f", "\b": "b", "\r": "r", "\v": "v",
+                                                     "\a": "a"}[c], obj)
+        return collapse_doubled(obj)
+    if isinstance(obj, list):
+        return [repair_latex(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: repair_latex(v) for k, v in obj.items()}
+    return obj
 
 
 def make_provider(cfg, store):
