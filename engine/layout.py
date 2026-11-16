@@ -77,6 +77,23 @@ def layout(nodes, deps, key=None):
     return out
 
 
+def layout_blocks(nodes, deps, block_of, key=None, gap=1):
+    """Several courses/domains at once: lay out each block on its own and put the blocks side by side (sorted by
+    name), foundations of every block on the same bottom row. Links between blocks are drawn but do not move nodes."""
+    blocks = defaultdict(list)
+    for n in nodes:
+        blocks[block_of(n)].append(n)
+    parts = {b: layout(ns, deps, key) for b, ns in blocks.items()}
+    top = max((p["level"] for part in parts.values() for p in part.values()), default=0)
+    out, x0 = {}, 0.0
+    for b in sorted(parts):
+        part = parts[b]
+        for n, p in part.items():
+            out[n] = {"level": p["level"], "x": round(x0 + p["x"], 2), "y": top - p["level"]}
+        x0 += max((p["x"] for p in part.values()), default=0) + 1 + gap
+    return out
+
+
 def crossings(pos, deps):
     """Number of crossing edge pairs between adjacent rows (for tests / tuning)."""
     edges = [(pos[d], pos[n]) for n, ds in deps.items() for d in ds if n in pos and d in pos

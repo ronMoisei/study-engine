@@ -4,7 +4,7 @@ import urllib.parse
 
 from . import learn
 from .graph import LATERAL, Graph
-from .layout import layout
+from .layout import layout, layout_blocks
 from .learner import statuses
 
 
@@ -68,7 +68,10 @@ def graph_payload(cfg, group=None, focus=None, around=1):
         shown = set(g.nodes)
     deps = {n: [d for d in g.requires(n) if d in shown] for n in shown}
     topic_key = lambda i: (g.nodes[i].topic or "", g.nodes[i].name.lower())  # noqa: E731
-    pos = layout(shown, deps, key=topic_key)
+    if not focus and not group:                             # all courses: one block per course, side by side
+        pos = layout_blocks(shown, deps, lambda i: group_of(cfg, g.nodes[i]), key=topic_key)
+    else:
+        pos = layout(shown, deps, key=topic_key)
     nodes = []
     for i in sorted(shown):
         n = g.nodes[i]

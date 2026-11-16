@@ -30,6 +30,13 @@ class Layout(unittest.TestCase):
         b = layout.layout(list(reversed(list(self.DEPS))), dict(reversed(list(self.DEPS.items()))))
         self.assertEqual(a, b)
 
+    def test_blocks_side_by_side_on_one_baseline(self):
+        deps = {"a2": ["a1"], "a1": [], "b3": ["b2"], "b2": ["b1"], "b1": []}
+        pos = layout.layout_blocks(deps, deps, lambda n: n[0])
+        self.assertLess(max(pos[n]["x"] for n in ("a1", "a2")), min(pos[n]["x"] for n in ("b1", "b2", "b3")))
+        self.assertEqual(pos["a1"]["y"], pos["b1"]["y"])            # foundations share the bottom row
+        self.assertEqual(pos["b3"]["y"], 0)
+
     def test_loop_does_not_hang(self):
         pos = layout.layout(["p", "q"], {"p": ["q"], "q": ["p"]})
         self.assertEqual(set(pos), {"p", "q"})

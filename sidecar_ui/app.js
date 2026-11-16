@@ -10,6 +10,7 @@ const STATUS = ["misconception", "fragile", "in_progress", "untested", "held"];
 const EASE = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
 const DECISION = { new: "NEW", extends: "ADDS TO NOTE", covered: "ALREADY COVERED", merged: "MERGED" };
 const NODE_W = 172, NODE_H = 34, COL = 196, ROW = 74;
+const ALL = "__all__";                                  // graph group value meaning "every course and domain"
 
 // ── host theme (same messages the app sends to its own sidecars) ──
 window.addEventListener("message", (ev) => {
@@ -152,7 +153,7 @@ const Graph = {
     bar.append(sel, search, names, lat);
     const info = el("div", { class: "row muted" });
     const legend = el("div", { class: "legend muted" }, ...STATUS.map((st) => el("span", { style: `--c: var(--st-${st})` }, st.replace("_", " "))),
-      el("span", { style: "--c: transparent; border: 1px dashed var(--muted)" }, "course note (read-only)"));
+      el("span", { style: "--c: transparent; border: 1px dashed var(--s-muted)" }, "course note (read-only)"));
     const wrap = el("div", { class: "graph-wrap" });
     v.append(bar, info, legend, wrap);
     this.els = { sel, search, names, info, wrap };
@@ -162,7 +163,7 @@ const Graph = {
   async load() {
     const s = this.state;
     const q = new URLSearchParams();
-    if (s.focus) q.set("focus", s.focus); else if (s.group) q.set("group", s.group);
+    if (s.focus) q.set("focus", s.focus); else if (s.group && s.group !== ALL) q.set("group", s.group);
     setStatus("loading graph…");
     try {
       s.data = await api("GET", "/graph?" + q.toString());
@@ -174,7 +175,8 @@ const Graph = {
       if (g) { s.group = g[0]; return this.load(); }
     }
     const { sel, names, info } = this.els;
-    sel.replaceChildren(...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
+    sel.replaceChildren(el("option", { value: ALL, selected: s.group === ALL && !s.focus }, `All courses (${d.total_nodes})`),
+      ...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
     if (s.focus) sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`));
     names.replaceChildren(...d.nodes.map((n) => el("option", { value: n.name })));
     const c = d.status_counts;
@@ -217,7 +219,7 @@ const Graph = {
     const root = svg("svg");
     const defs = svg("defs");
     const mk = svg("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-    mk.append(svg("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--muted)" }));
+    mk.append(svg("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--s-muted)" }));
     defs.append(mk); root.append(defs);
     const g = svg("g"); root.append(g);
     this.els.svg = root; this.els.g = g;
@@ -236,15 +238,22 @@ const Graph = {
       path.dataset.a = e.from; path.dataset.b = e.to;
       g.append(path); this.edgeEls.push(path);
     }
+    if (s.group === ALL && !s.focus) {                  // all courses: name each block above its leftmost column
+      const left = {};
+      for (const n of d.nodes) left[n.group] = Math.min(left[n.group] ?? Infinity, pos[n.id].x);
+      for (const [grp, x] of Object.entries(left)) {
+        const t = svg("text", { x, y: -22, class: "block-label" }); t.textContent = grp; g.append(t);
+      }
+    }
     this.nodeEls = {};
     for (const n of d.nodes) {
       const p = pos[n.id];
       const ng = svg("g", { class: `node${n.readonly ? " readonly" : ""}${n.focus ? " focus" : ""}`, transform: `translate(${p.x},${p.y})`, style: "cursor:pointer" });
-      ng.append(svg("rect", { width: NODE_W, height: NODE_H, fill: "var(--card-bg)", stroke: `var(--st-${n.status})` }));
+      ng.append(svg("rect", { width: NODE_W, height: NODE_H, fill: "var(--s-card-bg)", stroke: `var(--st-${n.status})` }));
       ng.append(svg("rect", { width: 6, height: NODE_H, fill: `var(--st-${n.status})`, stroke: "none" }));
       const label = n.name.length > 26 ? n.name.slice(0, 25) + "…" : n.name;
       const t = svg("text", { x: 12, y: 21 }); t.textContent = label; ng.append(t);
-      const title = svg("title"); title.textContent = `${n.name}\n${n.status}${n.topic ? " · " + n.topic : ""}`; ng.append(title);
+      const title = svg("title"); title.textContent = `${n.name}\n${n.status}${n.topic ? " · " + n.topic : ""}\n${n.group}`; ng.append(title);
       ng.addEventListener("click", (ev) => { ev.stopPropagation(); this.select(n.id); });
       ng.addEventListener("mouseenter", () => this.highlight(n.id));
       ng.addEventListener("mouseleave", () => this.highlight(null));
