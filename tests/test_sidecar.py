@@ -84,6 +84,21 @@ class Payload(unittest.TestCase):
         self.assertIn({"from": "graph_laplacian", "to": "degree_matrix", "type": "requires"}, d["edges"])
         self.assertEqual(d["status_counts"], {"untested": 4})
 
+    def test_knowledge_view_macro_nodes(self):
+        d = graphview.graph_payload(self.cfg)                      # no group, no focus: the all-knowledge view
+        self.assertTrue(d["clusters"])
+        for c in d["clusters"]:
+            self.assertTrue({"mx", "my", "w", "h", "foundations", "status_counts", "size"} <= set(c))
+        ids = {c["id"] for c in d["clusters"]}
+        for n in d["nodes"]:
+            self.assertIn(n["cluster"], ids)
+            c = next(c for c in d["clusters"] if c["id"] == n["cluster"])
+            self.assertTrue(0 <= n["lx"] < c["w"] and 0 <= n["ly"] < c["h"])   # local position inside its block
+        for e in d["cluster_edges"]:                               # aggregated, between different clusters only
+            self.assertNotEqual(e["from"], e["to"])
+            self.assertGreater(e["count"], 0)
+        self.assertEqual(graphview.graph_payload(self.cfg, group="Course")["clusters"], [])
+
     def test_group_and_focus_filters(self):
         self.assertEqual({n["id"] for n in graphview.graph_payload(self.cfg, group="Course")["nodes"]}, {"degree_matrix"})
         f = graphview.graph_payload(self.cfg, focus="graph_laplacian", around=1)

@@ -12,7 +12,6 @@ const DECISION = { new: "NEW", extends: "ADDS TO NOTE", covered: "ALREADY COVERE
 const NODE_W = 172, NODE_H = 34, COL = 196, ROW = 74;
 const ALL = "__all__";                                  // graph group value meaning "all knowledge"
 const KCOL = 130, KROW = 46;                            // all-knowledge view: dot grid
-const PALETTE = ["#a26be0", "#3fb3ad", "#c9b23e", "#55b86a", "#d9705f", "#5f8fe0", "#d07fbf", "#86b63f", "#e09a4a", "#4fb0d9"];
 
 // ── host theme (same messages the app sends to its own sidecars) ──
 window.addEventListener("message", (ev) => {
@@ -149,9 +148,13 @@ const Graph = {
     search.addEventListener("change", () => {
       const hit = (s.data?.nodes || []).find((n) => n.name.toLowerCase() === search.value.toLowerCase()) ||
                   (s.data?.nodes || []).find((n) => n.name.toLowerCase().includes(search.value.toLowerCase()));
-      if (hit) { this.center(hit); this.select(hit.id); }
+      if (hit && this.knowledge()) { Knowledge.reveal(this, hit.id); this.select(hit.id); }
+      else if (hit) { this.center(hit); this.select(hit.id); }
     });
-    const lat = el("label", { class: "muted" }, el("input", { type: "checkbox", checked: s.lateral, onchange: (e) => { s.lateral = e.target.checked; this.draw(); } }), " lateral links");
+    const lat = el("label", { class: "muted" }, el("input", { type: "checkbox", checked: s.lateral, onchange: (e) => {
+      s.lateral = e.target.checked;
+      if (this.knowledge()) Knowledge.redraw(); else this.draw();
+    } }), " lateral links");
     bar.append(sel, search, names, lat);
     const info = el("div", { class: "row muted" });
     const legend = el("div", { class: "legend muted" }, ...STATUS.map((st) => el("span", { style: `--c: var(--st-${st})` }, st.replace("_", " "))),
@@ -273,71 +276,8 @@ const Graph = {
     this.apply();
   },
 
-  /** All knowledge: concept clusters as vertical columns of dots on a soft glow, links across clusters. */
-  drawKnowledge() {
-    const s = this.state, d = s.data, wrap = this.els.wrap;
-    this.dims = { w: 0, h: 0 };                         // positions are dot centres
-    wrap.replaceChildren();
-    const root = svg("svg", { class: "knowledge" });
-    const defs = svg("defs");
-    root.append(defs);
-    const g = svg("g"); root.append(g);
-    this.els.svg = root; this.els.g = g;
-    const pos = {};
-    for (const n of d.nodes) pos[n.id] = { x: n.x * KCOL, y: n.y * KROW };
-    const colour = {};
-    d.clusters.forEach((c, i) => { colour[c.id] = c.id === "unlinked" ? "#8a8a8a" : PALETTE[i % PALETTE.length]; });
-    // glows and names
-    const glows = svg("g"), names = svg("g");
-    d.clusters.forEach((c, i) => {
-      const ps = d.nodes.filter((n) => n.cluster === c.id).map((n) => pos[n.id]);
-      const x0 = Math.min(...ps.map((p) => p.x)), x1 = Math.max(...ps.map((p) => p.x));
-      const y0 = Math.min(...ps.map((p) => p.y)), y1 = Math.max(...ps.map((p) => p.y));
-      const grad = svg("radialGradient", { id: `glow${i}` });       // soft at every zoom level, unlike a blur
-      for (const [o, a] of [[0, 0.34], [0.55, 0.16], [1, 0]]) grad.append(svg("stop", { offset: o, "stop-color": colour[c.id], "stop-opacity": a }));
-      defs.append(grad);
-      glows.append(svg("ellipse", { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: (x1 - x0) / 2 + 110, ry: (y1 - y0) / 2 + 80, fill: `url(#glow${i})` }));
-      const t = svg("text", { x: (x0 + x1) / 2, y: y0 - 30, class: "cluster-label", fill: colour[c.id], "text-anchor": "middle" });
-      t.textContent = `${c.name} · ${c.size}`; names.append(t);
-    });
-    g.append(glows);
-    this.edgeEls = [];
-    for (const e of d.edges) {
-      if (e.type !== "requires" && !s.lateral) continue;
-      const a = pos[e.to], b = pos[e.from];
-      if (!a || !b) continue;
-      const line = svg("line", { class: `edge k${e.type === "requires" ? "" : " lateral"}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-      line.dataset.a = e.from; line.dataset.b = e.to;
-      g.append(line); this.edgeEls.push(line);
-    }
-    g.append(names);
-    this.nodeEls = {};
-    const card = el("div", { class: "kcard", style: "display:none" });
-    for (const n of d.nodes) {
-      const p = pos[n.id];
-      const ng = svg("g", { class: `node dot st-dot-${n.status}`, transform: `translate(${p.x},${p.y})`, style: "cursor:pointer" });
-      ng.append(svg("circle", { r: 9, class: "hit" }), svg("circle", { r: 4.5 }));
-      const t = svg("text", { y: 17, "text-anchor": "middle" });
-      t.textContent = n.name.length > 21 ? n.name.slice(0, 20) + "…" : n.name; ng.append(t);
-      ng.addEventListener("click", (ev) => { ev.stopPropagation(); card.style.display = "none"; this.select(n.id); });
-      ng.addEventListener("mouseenter", () => {
-        this.highlight(n.id);
-        const r = ng.getBoundingClientRect(), w = wrap.getBoundingClientRect();
-        const cl = d.clusters.find((c) => c.id === n.cluster);
-        card.replaceChildren(el("b", {}, n.name), n.summary ? mdEl(n.summary, "kcard-text") : "",
-          el("div", { class: "muted" }, pill(n.status), ` ${cl ? cl.name : ""} · ${n.group}`));
-        card.style.display = "block";
-        const left = Math.min(r.left - w.left + 14, w.width - 300);
-        card.style.left = `${Math.max(6, left)}px`;
-        card.style.top = `${Math.max(6, r.top - w.top + 14)}px`;
-      });
-      ng.addEventListener("mouseleave", () => { this.highlight(null); card.style.display = "none"; });
-      g.append(ng); this.nodeEls[n.id] = ng;
-    }
-    this.pos = pos;
-    wrap.append(card);
-    this.finish(root);
-  },
+  /** All knowledge: macro-nodes, chains and the settings menu live in knowledge.js. */
+  drawKnowledge() { Knowledge.draw(this); },
 
   highlight(id) {
     const d = this.state.data;
@@ -401,7 +341,10 @@ const Graph = {
     wrap.append(dr);
     let n;
     try { n = await api("GET", `/node/${encodeURIComponent(id)}`); } catch (e) { dr.replaceChildren(); return err(dr, e); }
-    const link = (x) => el("a", { onclick: () => { if (this.pos[x.id]) { this.center({ id: x.id }); } this.select(x.id); } }, x.name);
+    const link = (x) => el("a", { onclick: () => {
+      if (this.knowledge()) Knowledge.reveal(this, x.id); else if (this.pos[x.id]) this.center({ id: x.id });
+      this.select(x.id);
+    } }, x.name);
     const goal = goalBox("Goal / scope (optional): e.g. theory only, no code");
     let acts;
     const picker = levelPicker(() => acts.refresh());

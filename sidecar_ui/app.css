@@ -57,20 +57,30 @@ h4 { margin: 14px 0 4px; font-size: 13px; }
 /* all-knowledge view: dots, soft cluster glows, small labels */
 svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0c0e 70%); }
 .cluster-label { font: 600 15px "Cascadia Mono", Consolas, monospace; letter-spacing: .02em; pointer-events: none; }
-.edge.k { stroke: var(--s-fg); stroke-opacity: .22; stroke-width: 1; }
-.edge.k.lateral { stroke: var(--s-accent); stroke-opacity: .45; stroke-dasharray: 3 4; }
-.edge.k.hot { stroke-opacity: .95; stroke-width: 1.6; }
-.edge.k.dim { stroke-opacity: .05; }
-.node.dot circle { fill: #ececec; stroke: none; }
-.node.dot circle.hit { fill: transparent; }
-.node.dot text { fill: var(--s-fg); fill-opacity: .7; font: 9.5px "Cascadia Mono", Consolas, monospace; pointer-events: none; }
-.node.dot:hover circle:not(.hit) { r: 6.5; }
+.cluster-label.clickable { cursor: pointer; pointer-events: auto; }
+.kedge { stroke: #bdbdbd; fill: none; }
+.kedge.lateral { stroke: var(--s-accent); stroke-dasharray: 3 4; }
+.kedge.hot { stroke: #fff; }
+.kedge.dim { opacity: .12; }
+.junction { fill: #bdbdbd; }
+.node circle.hit { fill: transparent; stroke: none; }
+.node.dot text { fill: var(--s-fg); fill-opacity: .72; font-family: "Cascadia Mono", Consolas, monospace; pointer-events: none; }
 .node.dot:hover text { fill-opacity: 1; }
-.st-dot-misconception circle:not(.hit) { fill: var(--st-misconception) !important; }
-.st-dot-fragile circle:not(.hit) { fill: var(--st-fragile) !important; }
-.st-dot-in_progress circle:not(.hit) { fill: var(--st-in_progress) !important; }
-.st-dot-held circle:not(.hit) { fill: var(--st-held) !important; }
+.node.macro text { fill: var(--s-fg); font-family: "Cascadia Mono", Consolas, monospace; pointer-events: none; }
+.node.macro text.count { fill: #111; font-weight: 700; }
+.node.macro text.mlabel { font-weight: 600; }
+.node.macro .ring { fill: none; stroke: var(--st-held); stroke-width: 3; }
+.node.macro:hover circle:not(.hit):not(.ring) { stroke: #fff; }
 svg.far .node.dot text { display: none; }
+.kmenu { position: absolute; top: 8px; right: 8px; z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.kgear { width: 30px; height: 30px; padding: 0; font-size: 16px; }
+.kpanel { width: 250px; max-height: calc(100vh - 220px); overflow-y: auto; background: #161618; border: 1px solid var(--s-line); border-radius: 10px; padding: 4px 12px 10px; box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+.kpanel h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.krow { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; }
+.krow select { max-width: 150px; }
+.kslider { display: flex; align-items: center; gap: 6px; }
+.kslider input { width: 100px; }
+.kslider .muted { width: 26px; text-align: right; }
 .kcard { position: absolute; z-index: 3; width: 290px; background: #161618; border: 1px solid var(--s-line); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.5); pointer-events: none; font-size: 12px; }
 .kcard b { display: block; margin-bottom: 4px; font-size: 13px; }
 .kcard-text p { margin: 0 0 6px; }

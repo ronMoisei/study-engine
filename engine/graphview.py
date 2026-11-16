@@ -80,10 +80,7 @@ def graph_payload(cfg, group=None, focus=None, around=1):
                                              lambda i: g.nodes[i].topic or g.nodes[i].domain)
         # grid cells are ~2.8x wider than tall in the panel, so 0.6 grid aspect ≈ a 1.6:1 picture
         pos, blocks = layout_clusters(shown, deps, cluster_of.get, key=topic_key, aspect=0.6)
-        size = {}
-        for c in cluster_of.values():
-            size[c] = size.get(c, 0) + 1
-        cluster_list = [{**b, "name": names[b["id"]], "size": size[b["id"]]} for b in blocks]
+        cluster_list = _macro(g, st, shown, deps, cluster_of, names, pos, blocks)
     else:
         pos = layout(shown, deps, key=topic_key)
     nodes = []
@@ -94,15 +91,53 @@ def graph_payload(cfg, group=None, focus=None, around=1):
              "focus": i == focus, **pos[i]}
         if knowledge:
             text = " ".join(str(n.statement or "").split())
-            x.update(cluster=cluster_of[i], summary=text[:240] + ("…" if len(text) > 240 else ""))
+            b = next(b for b in cluster_list if b["id"] == cluster_of[i])
+            x.update(cluster=cluster_of[i], summary=text[:240] + ("…" if len(text) > 240 else ""),
+                     lx=round(x["x"] - b["x0"], 2), ly=round(x["y"] - b["y0"], 2))   # position inside its cluster
         nodes.append(x)
     counts = {}
     for x in nodes:
         counts[x["status"]] = counts.get(x["status"], 0) + 1
+    cluster_edges = []
+    if knowledge:
+        agg = {}
+        for n_, ds in deps.items():
+            for d in ds:
+                a, b = cluster_of[n_], cluster_of[d]
+                if a != b:
+                    agg[(a, b)] = agg.get((a, b), 0) + 1
+        cluster_edges = [{"from": a, "to": b, "count": c} for (a, b), c in sorted(agg.items())]
     return {"nodes": nodes, "edges": edges, "groups": dict(sorted(groups.items())), "group": group,
-            "clusters": cluster_list,
+            "clusters": cluster_list, "cluster_edges": cluster_edges,
             "focus": focus, "levels": max((p["level"] for p in pos.values()), default=-1) + 1,
             "status_counts": counts, "total_nodes": len(g.nodes)}
+
+
+def _macro(g, st, shown, deps, cluster_of, names, pos, blocks):
+    """Clusters as macro-nodes: size, status mix, a few foundation concepts, and a layered layout of the cluster
+    graph itself (cluster A above cluster B when A's concepts require B's)."""
+    members = {}
+    for i in sorted(shown):
+        members.setdefault(cluster_of[i], []).append(i)
+    cdeps = {c: set() for c in members}
+    for n, ds in deps.items():
+        for d in ds:
+            if cluster_of[n] != cluster_of[d]:
+                cdeps[cluster_of[n]].add(cluster_of[d])
+    mpos = layout(members, {c: sorted(v) for c, v in cdeps.items()}, key=lambda c: (-len(members[c]), c))
+    out = []
+    for b in blocks:
+        c = b["id"]
+        mix = {}
+        for i in members[c]:
+            s = st.get(i, "untested")
+            mix[s] = mix.get(s, 0) + 1
+        found = sorted(members[c], key=lambda i: (pos[i]["level"], g.nodes[i].name.lower()))
+        out.append({**b, "name": names[c], "size": len(members[c]), "status_counts": mix,
+                    "w": b["x1"] - b["x0"] + 1, "h": b["y1"] - b["y0"] + 1,
+                    "foundations": [g.nodes[i].name for i in found[:5]],
+                    "mx": mpos[c]["x"], "my": mpos[c]["y"], "mlevel": mpos[c]["level"]})
+    return out
 
 
 def node_detail(cfg, node_id):
