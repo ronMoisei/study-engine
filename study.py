@@ -13,6 +13,7 @@
   python study.py show <id>                  print one proposal
   python study.py approve <id> [--accept 0,2] [--reject 3]   write items to Graph/ (default: all pending)
   python study.py plan <id>                  build the study plan note for a proposal
+  python study.py propose <concepts.json>    concepts taught in an agy session -> proposal (no model call)
 
 Flags valid everywhere: --stub (offline stand-in grader), --dry-run (never rate/add in Anki).
 """
@@ -272,10 +273,32 @@ def ingest_cli(cfg, a):
         sys.exit(f"{a.cmd}: {e}")
 
 
+def propose_cli(cfg, path):
+    """Concepts taught in a session (JSON file) -> an Inbox proposal. Exit 2 on invalid input (nothing saved)."""
+    from pathlib import Path
+    from engine import session
+    if not path or not Path(path).is_file():
+        sys.exit("usage: python study.py propose <concepts.json>   (format: engine/session.py docstring)")
+    try:
+        p = session.propose(cfg, json.loads(Path(path).read_text(encoding="utf-8")))
+    except (session.SessionError, json.JSONDecodeError) as e:
+        print(f"invalid: {e}", file=sys.stderr)
+        sys.exit(2)
+    s = p["stats"]
+    print(f"proposal {p['id']} · domain {p['domain']} · {s['new']} new, {s['extends']} extend a note, "
+          f"{s['covered']} already covered")
+    for it in p["items"]:
+        drops = f"  (dropped links: {', '.join(d['to'] + ' ' + d['reason'] for d in it['dropped_edges'])})" \
+            if it["dropped_edges"] else ""
+        print(f"  [{it['decision']}, {it['status']}] {it['concept']['title']}  slug: {it['slug']}{drops}")
+    print("Use each slug as the cards' lh::<slug> tag. Nothing is in Graph/ until the learner approves it in the "
+          "Study panel -> Inbox.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "install-sidecar", "deploy", "calls",
-                                    "ingest", "proposals", "show", "approve", "plan"])
+                                    "ingest", "proposals", "show", "approve", "plan", "propose"])
     ap.add_argument("target", nargs="?", help="file for ingest; proposal id for show/approve/plan")
     ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp")
     ap.add_argument("--accept", help="comma-separated item numbers")
@@ -302,6 +325,8 @@ def main():
         return deploy(cfg)
     if a.cmd == "calls":
         return show_calls(cfg, a.last)
+    if a.cmd == "propose":
+        return propose_cli(cfg, a.target)
     if a.cmd in ("ingest", "proposals", "show", "approve", "plan"):
         return ingest_cli(cfg, a)
     engine = Engine(cfg)

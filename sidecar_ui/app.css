@@ -67,6 +67,12 @@ svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0
 .kedge.hot { stroke: #fff; }
 .kedge.dim { opacity: .12; }
 .junction { fill: #bdbdbd; }
+.khit { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+.khit:hover + .khit, .khit:hover { stroke: rgba(255,255,255,.06); }
+.kedgecard { pointer-events: auto; width: 320px; }
+.kedgecard .close { float: right; padding: 0 6px; }
+.kedgecard ul.links { max-height: 220px; overflow-y: auto; }
+.node.macro { cursor: grab; }
 .node circle.hit { fill: transparent; stroke: none; }
 .node.dot text { fill: var(--s-fg); fill-opacity: .72; font-family: "Cascadia Mono", Consolas, monospace; pointer-events: none; }
 .node.dot:hover text { fill-opacity: 1; }
@@ -78,6 +84,7 @@ svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0
 svg.far .node.dot text { display: none; }
 .kmenu { position: absolute; top: 8px; right: 8px; z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .kgear { width: 30px; height: 30px; padding: 0; font-size: 16px; }
+.graph-wrap:has(> .drawer) .kmenu { right: calc(min(380px, 92%) + 8px); }   /* keep ⚙ clear of an open drawer */
 .kpanel { width: 250px; max-height: calc(100vh - 220px); overflow-y: auto; background: #161618; border: 1px solid var(--s-line); border-radius: 10px; padding: 4px 12px 10px; box-shadow: 0 8px 28px rgba(0,0,0,.5); }
 .kpanel h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
 .krow { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; }

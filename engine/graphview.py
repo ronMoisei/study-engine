@@ -46,10 +46,11 @@ def _dependents(graph):
     return out
 
 
-def graph_payload(cfg, group=None, focus=None, around=1):
+def graph_payload(cfg, group=None, focus=None, around=1, g=None):
     """group: show one domain/course; focus: show the prerequisite path of a node plus `around` levels of
-    dependents. With neither, everything is returned (the panel asks for a group by default)."""
-    g = Graph.load(cfg)
+    dependents. With neither, everything is returned (the panel asks for a group by default).
+    `g`: an already loaded Graph (saves reading every note again)."""
+    g = g or Graph.load(cfg)
     st = statuses(cfg.ledger)
     groups = {}
     for n in g.nodes.values():
@@ -138,6 +139,49 @@ def _macro(g, st, shown, deps, cluster_of, names, pos, blocks):
                     "foundations": [g.nodes[i].name for i in found[:5]],
                     "mx": mpos[c]["x"], "my": mpos[c]["y"], "mlevel": mpos[c]["level"]})
     return out
+
+
+def cluster_detail(cfg, cluster_id):
+    """One concept cluster of the all-knowledge view as a lecture: its concepts in study order (foundations first)
+    and the direct prerequisites it borrows from other clusters."""
+    g = Graph.load(cfg)
+    d = graph_payload(cfg, g=g)
+    c = next((x for x in d["clusters"] if x["id"] == cluster_id), None)
+    if c is None:
+        raise KeyError(f"unknown cluster {cluster_id}")
+    st = statuses(cfg.ledger)
+    members = {n["id"] for n in d["nodes"] if n["cluster"] == cluster_id}
+    order, _ = g.study_order(sorted(members))
+    item = lambda i: {"id": i, "name": g.nodes[i].name, "status": st.get(i, "untested")}  # noqa: E731
+    outside = sorted({p for m in members for p in g.requires(m) if p not in members and p in g.nodes},
+                     key=lambda i: order.index(i) if i in order else len(order))
+    cname = {x["id"]: x["name"] for x in d["clusters"]}
+    node_cluster = {n["id"]: n["cluster"] for n in d["nodes"]}
+    return {"id": cluster_id, "name": c["name"], "size": c["size"], "status_counts": c["status_counts"],
+            "courses": sorted({n["group"] for n in d["nodes"] if n["cluster"] == cluster_id}),
+            "order": [item(i) for i in order if i in members],
+            "outside": [{**item(i), "cluster": cname.get(node_cluster.get(i), "")} for i in outside]}
+
+
+def cluster_message(cfg, cluster_id, level=None, goal=None):
+    """'Prepare lecture' for a whole cluster: a deterministic lecture plan handed to agy."""
+    level = learn.level_of(level)
+    c = cluster_detail(cfg, cluster_id)
+    todo = [x for x in c["order"] if x["status"] != "held"]
+    lines = ["Use the `learning-harness` skill.",
+             f"Topic: the concept cluster **{c['name']}** ({c['size']} concepts in the study graph; courses: "
+             + ", ".join(c["courses"]) + "). Prepare it as one lecture."]
+    lines += learn.header(level, goal)
+    if c["outside"]:
+        lines += ["", "Prerequisites from other clusters (check these first; held ones need no teaching):"]
+        lines += [f"- {x['name']} (`{x['id']}`, {x['cluster']}) — {x['status']}" for x in c["outside"]]
+    lines += ["", "Lecture order from the study engine, foundations first, with my status:"]
+    lines += [f"{i}. {x['name']} (`{x['id']}`) — {x['status']}" for i, x in enumerate(c["order"], 1)]
+    lines += ["", "Turn this into a lecture: group the steps into a few sections, present the plan map first "
+                  "(teach skill) and wait for my go-ahead, then run the sections in order. Read the concepts' notes "
+                  "and the course material they cite yourself."]
+    lines += [x for x in learn.instructions(level, len(todo), len(c["order"])) if x]
+    return "\n".join(lines)
 
 
 def node_detail(cfg, node_id):

@@ -1,10 +1,11 @@
 {
-  "magistrale": "G:\\My Drive\\Università\\Magistrale",
+  "magistrale": "D:\\path\\to\\Magistrale",
   "provider": "agy",
   "models": {
     "extract": "agy:gemini-3.8-flash-low",
+    "group": "agy:gemini-3.8-flash-low",
+    "relate": "agy:gemini-3.8-flash-low",
     "judge": "ollama:qwen3.5:9b",
-    "link": "agy:gemini-3.8-flash-low",
     "checklist": "agy:gemini-3.8-flash-low",
     "grade": "agy:gemini-3.8-flash-low",
     "remedial": "agy:gemini-3.8-flash-medium"
@@ -14,5 +15,6 @@
   "note_type": "Basilare",
   "front_field": "Fronte",
   "back_field": "Retro",
+  "teach_model": "flash",
   "dry_run": false
 }

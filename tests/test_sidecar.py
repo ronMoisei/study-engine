@@ -99,6 +99,24 @@ class Payload(unittest.TestCase):
             self.assertGreater(e["count"], 0)
         self.assertEqual(graphview.graph_payload(self.cfg, group="Course")["clusters"], [])
 
+    def test_cluster_lecture(self):
+        d = graphview.graph_payload(self.cfg)
+        cid = next(n["cluster"] for n in d["nodes"] if n["id"] == "fiedler_value_is_the")
+        c = graphview.cluster_detail(self.cfg, cid)
+        ids = [x["id"] for x in c["order"]]
+        self.assertIn("fiedler_value_is_the", ids)
+        for x in c["outside"]:                                     # borrowed prerequisites are not in the cluster
+            self.assertNotIn(x["id"], ids)
+        if "graph_laplacian" in ids:                              # foundations first
+            self.assertLess(ids.index("graph_laplacian"), ids.index("fiedler_value_is_the"))
+        m = graphview.cluster_message(self.cfg, cid, 1, "theory only")
+        self.assertIn(f"the concept cluster **{c['name']}**", m)
+        self.assertIn("Prepare it as one lecture", m)
+        self.assertIn("phase `teach`", m)
+        self.assertIn("No multiple choice", m)
+        with self.assertRaises(KeyError):
+            graphview.cluster_detail(self.cfg, "nope")
+
     def test_group_and_focus_filters(self):
         self.assertEqual({n["id"] for n in graphview.graph_payload(self.cfg, group="Course")["nodes"]}, {"degree_matrix"})
         f = graphview.graph_payload(self.cfg, focus="graph_laplacian", around=1)

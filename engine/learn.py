@@ -24,7 +24,11 @@ LEVELS = {
         "Project mode: propose three real, complex projects that use this topic together with others I hold, each "
         "with a one-line CV description and a first milestone that fits one session. Wait for my pick."),
 }
-OPEN_ONLY = "Open questions only (explain, derive, prove, compute; code only if my scope includes it). No multiple choice."
+OPEN_ONLY = ("Open questions only (explain, derive, prove, compute; code only if my scope includes it). No multiple "
+             "choice. I reply free-form (often dictated): answer, reasoning and my own questions together — no "
+             "answer/conf/thinking template. No Obsidian callouts in chat.")
+CAPTURE = ("After each unit, capture what was taught (teach skill §4): new concepts into this session's Inbox "
+           "proposal with `study.py propose`, easy flashcards with `mcp_anki_add_cards`.")
 # Folders inside a course that are not source material for the graph.
 SKIP_DIRS = {"Atomic Notes", "flashcards", "images", "Video", "Audio"}
 MAX_FILES = 25
@@ -56,12 +60,14 @@ def header(level, goal):
 def instructions(level, todo, total):
     if not level:
         return [f"{todo} of {total} steps are not yet held. " if total else "",
-                "Once you have my level, start in the mode it selects.", OPEN_ONLY]
+                "Once you have my level, start in the mode it selects.", OPEN_ONLY, CAPTURE]
     out = [LEVELS[level][3]]
     if level <= 2 and total:
         out.append(f"{todo} of {total} steps are not yet held; do not re-teach what the evidence shows as held "
                    "unless a question contradicts it.")
     out.append(OPEN_ONLY)
+    if level in (1, 2, 5):                               # modes that introduce new concepts
+        out.append(CAPTURE)
     return out
 
 

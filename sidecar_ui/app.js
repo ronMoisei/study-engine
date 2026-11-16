@@ -292,7 +292,7 @@ const Graph = {
     const s = this.state;
     let drag = null;
     root.addEventListener("pointerdown", (ev) => {
-      if (ev.target.closest && ev.target.closest(".node, .kclose, .clickable")) return;   // let these receive their click
+      if (ev.target.closest && ev.target.closest(".node, .kclose, .clickable, .khit")) return;   // let these receive their click
       drag = { x: ev.clientX, y: ev.clientY, tx: s.tx, ty: s.ty }; root.classList.add("dragging"); root.setPointerCapture(ev.pointerId);
     });
     root.addEventListener("pointermove", (ev) => { if (!drag) return; s.tx = drag.tx + ev.clientX - drag.x; s.ty = drag.ty + ev.clientY - drag.y; this.apply(); });
@@ -471,7 +471,8 @@ const Inbox = {
       head.append(el("span", { class: "badge" }, DECISION[it.decision] || it.decision), el("b", {}, c.title), el("span", { class: "muted" }, `${c.kind} · ${c.topic}${it.status !== "pending" ? " · " + it.status : ""}`));
       d.append(head);
       if (it.match) d.append(el("div", { class: "muted" }, `${it.decision === "merged" ? "merged into" : it.decision === "extends" ? "adds to" : "already covered by"} ${it.match}`));
-      d.append(mdEl(c.definition), el("div", { class: "quote" }, `“${c.quote}” — ${c.anchor.split("/").pop()}`));
+      d.append(mdEl(c.definition), c.quote ? el("div", { class: "quote" }, `“${c.quote}” — ${c.anchor.split("/").pop()}`)
+        : el("div", { class: "muted" }, `from ${c.anchor.split("/").pop()}`));
       const props = it.decision === "extends" ? it.new_propositions : it.decision === "new" ? c.propositions : [];
       if (props.length) d.append(el("ul", {}, ...props.map((x) => { const li = el("li"); li.innerHTML = md(x.text); return li; })));
       if (it.decision === "new") {

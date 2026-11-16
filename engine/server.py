@@ -18,6 +18,8 @@ GET  /graph?group=&focus=&around=1            laid-out prerequisite graph with l
 GET  /node/<id>                               one concept: definition, links, path, file
 GET  /teach-message?id=&level=&goal=         the message "Teach me this" would send (level 1-5 picks the mode)
 POST /teach {id, level, goal, conversationId} send it to that conversation (or start a new one)
+GET  /cluster/<id>                            a concept cluster as a lecture: order, outside prerequisites
+     /teach-message?cluster=… and POST /teach {cluster, …}   "Prepare lecture" for a whole cluster
 GET  /learn-message?target=&level=&goal=     Inbox "Start learning": node, file/folder/course, or a topic in words
 POST /learn {target, level, goal, conversationId}
 GET  /                                        the side-panel UI (sidecar_ui/)
@@ -182,7 +184,13 @@ def make_handler(engine, token=None):
                 m = re.fullmatch(r"/node/([\w-]+)", path)
                 if m and method == "GET":
                     return self._send(200, graphview.node_detail(engine.cfg, m.group(1)))
+                m = re.fullmatch(r"/cluster/([\w-]+)", path)
+                if m and method == "GET":
+                    return self._send(200, graphview.cluster_detail(engine.cfg, m.group(1)))
                 if method == "GET" and path == "/teach-message":
+                    if q("cluster"):
+                        return self._send(200, {"message": graphview.cluster_message(engine.cfg, q("cluster"),
+                                                                                     q("level"), q("goal"))})
                     return self._send(200, {"message": graphview.teach_message(engine.cfg, q("id", ""), q("level"),
                                                                                q("goal"))})
                 if method == "GET" and path == "/learn-message":
@@ -192,9 +200,12 @@ def make_handler(engine, token=None):
                     return self._send(200, {"courses": learn.courses(engine.cfg)})
                 if method == "POST" and path in ("/teach", "/learn"):
                     b = self._body()
-                    msg = graphview.teach_message(engine.cfg, b.get("id", ""), b.get("level"), b.get("goal")) \
-                        if path == "/teach" else \
-                        graphview.learn_message(engine.cfg, b.get("target", ""), b.get("level"), b.get("goal"))
+                    if path == "/learn":
+                        msg = graphview.learn_message(engine.cfg, b.get("target", ""), b.get("level"), b.get("goal"))
+                    elif b.get("cluster"):
+                        msg = graphview.cluster_message(engine.cfg, b["cluster"], b.get("level"), b.get("goal"))
+                    else:
+                        msg = graphview.teach_message(engine.cfg, b.get("id", ""), b.get("level"), b.get("goal"))
                     if b.get("conversationId"):
                         out = sidecar.send_message(b["conversationId"], msg)
                         return self._send(200, {"sent_to": b["conversationId"], "result": out, "message": msg})
