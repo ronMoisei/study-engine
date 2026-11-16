@@ -30,12 +30,26 @@ class Layout(unittest.TestCase):
         b = layout.layout(list(reversed(list(self.DEPS))), dict(reversed(list(self.DEPS.items()))))
         self.assertEqual(a, b)
 
-    def test_blocks_side_by_side_on_one_baseline(self):
-        deps = {"a2": ["a1"], "a1": [], "b3": ["b2"], "b2": ["b1"], "b1": []}
-        pos = layout.layout_blocks(deps, deps, lambda n: n[0])
-        self.assertLess(max(pos[n]["x"] for n in ("a1", "a2")), min(pos[n]["x"] for n in ("b1", "b2", "b3")))
-        self.assertEqual(pos["a1"]["y"], pos["b1"]["y"])            # foundations share the bottom row
-        self.assertEqual(pos["b3"]["y"], 0)
+    def test_clusters_as_blocks(self):
+        deps = {"a2": ["a1"], "a1": [], "b3": ["b2"], "b2": ["b1", "a2"], "b1": []}  # b2 also needs a2
+        pos, blocks = layout.layout_clusters(deps, deps, lambda n: n[0], aspect=10)  # wide: one band
+        a, b = [n for n in deps if n[0] == "a"], [n for n in deps if n[0] == "b"]
+        xa, xb = {pos[n]["x"] for n in a}, {pos[n]["x"] for n in b}
+        self.assertTrue(max(xa) < min(xb) or max(xb) < min(xa))      # one column block per cluster
+        self.assertLess(pos["b3"]["y"], pos["b2"]["y"])               # inside a cluster: above what it requires
+        self.assertEqual(pos["a1"]["y"], pos["b1"]["y"])              # foundations share the band's bottom row
+        self.assertEqual({x["id"] for x in blocks}, {"a", "b"})
+        self.assertEqual(layout.layout_clusters(deps, deps, lambda n: n[0]), (pos, blocks))   # deterministic
+
+    def test_concept_clusters(self):
+        from engine import clusters
+        topic = {"x1": "attention", "x2": "attention", "x3": "attention", "y1": "softmax", "z1": "sql-joins",
+                 "w1": "lonely"}
+        label, names = clusters.cluster(topic, [("y1", "x1"), ("z1", "z1")], topic.get, min_size=3)
+        self.assertEqual(label["y1"], "attention")                    # small topic folded into its linked cluster
+        self.assertEqual((label["z1"], label["w1"]), ("unlinked", "unlinked"))
+        self.assertEqual(names["attention"], "Attention")
+        self.assertEqual(clusters.title_of("nosql_patterns"), "NoSQL patterns")
 
     def test_loop_does_not_hang(self):
         pos = layout.layout(["p", "q"], {"p": ["q"], "q": ["p"]})

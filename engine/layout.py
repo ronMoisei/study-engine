@@ -39,12 +39,25 @@ def layout(nodes, deps, key=None):
     -> {id: {"level": L, "x": col, "y": row}} with row 0 at the TOP (the highest level)."""
     nodes = sorted(set(nodes))
     deps = {n: [d for d in deps.get(n, []) if d in set(nodes) and d != n] for n in nodes}
+    lv = levels(nodes, deps)
+    rows = _arrange(nodes, deps, lv, key)
+    top = max(lv.values(), default=0)
+    width = max((len(r) for r in rows.values()), default=1)
+    out = {}
+    for L, r in rows.items():
+        offset = (width - len(r)) / 2                # centre each row
+        for i, n in enumerate(r):
+            out[n] = {"level": L, "x": round(offset + i, 2), "y": top - L}
+    return out
+
+
+def _arrange(nodes, deps, lv, key=None):
+    """Order the nodes inside each level (initial key order, then barycenter sweeps). -> {level: [ids]}."""
     up = defaultdict(list)                           # dependents
     for n, ds in deps.items():
         for d in ds:
             up[d].append(n)
-    lv = levels(nodes, deps)
-    top = max(lv.values(), default=0)
+    top = max((lv[n] for n in nodes), default=0)
     rows = defaultdict(list)
     for n in nodes:
         rows[lv[n]].append(n)
@@ -59,6 +72,8 @@ def layout(nodes, deps, key=None):
         pos = pos_map()
         order = range(1, top + 1) if sweep % 2 == 0 else range(top - 1, -1, -1)
         for L in order:
+            if L not in rows:
+                continue
             neigh = deps if sweep % 2 == 0 else up    # upward sweep: look at prerequisites; downward: dependents
 
             def bary(n):
@@ -67,31 +82,67 @@ def layout(nodes, deps, key=None):
             rows[L].sort(key=lambda n: (bary(n), key(n), n))
             for i, n in enumerate(rows[L]):
                 pos[n] = i
-
-    width = max((len(r) for r in rows.values()), default=1)
-    out = {}
-    for L, r in rows.items():
-        offset = (width - len(r)) / 2                # centre each row
-        for i, n in enumerate(r):
-            out[n] = {"level": L, "x": round(offset + i, 2), "y": top - L}
-    return out
+    return rows
 
 
-def layout_blocks(nodes, deps, block_of, key=None, gap=1):
-    """Several courses/domains at once: lay out each block on its own and put the blocks side by side (sorted by
-    name), foundations of every block on the same bottom row. Links between blocks are drawn but do not move nodes."""
-    blocks = defaultdict(list)
+def layout_clusters(nodes, deps, cluster_of, key=None, gap=1.5, band_gap=2.5, aspect=1.6):
+    """The all-knowledge view: one vertical block per concept cluster (foundations at its bottom, levels counted
+    inside the cluster), blocks packed left to right in bands like shelves so the whole map is about `aspect`
+    times wider than tall. Clusters sharing many links are placed next to each other. Links between clusters are
+    drawn but do not move nodes. -> ({id: {"level", "x", "y"}}, [{"id", "x0", "x1", "y0", "y1"}])."""
+    nodes = sorted(set(nodes))
+    deps = {n: [d for d in deps.get(n, []) if d in set(nodes) and d != n] for n in nodes}
+    members = defaultdict(list)
     for n in nodes:
-        blocks[block_of(n)].append(n)
-    parts = {b: layout(ns, deps, key) for b, ns in blocks.items()}
-    top = max((p["level"] for part in parts.values() for p in part.values()), default=0)
-    out, x0 = {}, 0.0
-    for b in sorted(parts):
-        part = parts[b]
-        for n, p in part.items():
-            out[n] = {"level": p["level"], "x": round(x0 + p["x"], 2), "y": top - p["level"]}
-        x0 += max((p["x"] for p in part.values()), default=0) + 1 + gap
-    return out
+        members[cluster_of(n)].append(n)
+    link = defaultdict(int)                          # links between two clusters
+    for n, ds in deps.items():
+        for d in ds:
+            a, b = cluster_of(n), cluster_of(d)
+            if a != b:
+                link[(a, b)] += 1
+                link[(b, a)] += 1
+    # order: start with the largest cluster, then always the one most linked to the last placed one
+    left = sorted(members, key=lambda c: (-len(members[c]), c))
+    order = [left.pop(0)] if left else []
+    while left:
+        last = order[-1]
+        nxt = min(left, key=lambda c: (-link[(last, c)], -sum(link[(o, c)] for o in order), -len(members[c]), c))
+        left.remove(nxt)
+        order.append(nxt)
+    # each cluster laid out on its own
+    parts = {}
+    for c in order:
+        ns = members[c]
+        inner = {n: [d for d in deps[n] if d in set(ns)] for n in ns}
+        lv = levels(ns, inner)
+        rows = _arrange(ns, inner, lv, key)
+        parts[c] = (rows, max(len(r) for r in rows.values()), max(lv.values()) + 1)
+    # shelf packing: target band width from the total area
+    area = sum((w + gap) * (h + band_gap) for _, w, h in parts.values())
+    target = max(max(w for _, w, _ in parts.values()), (area * aspect) ** 0.5) if parts else 0
+    out, blocks, x0, y0, band_h = {}, [], 0.0, 0.0, 0
+    for c in order:
+        rows, width, height = parts[c]
+        if x0 > 0 and x0 + width > target:
+            x0, y0, band_h = 0.0, y0 + band_h + band_gap, 0
+        for L, r in rows.items():
+            offset = (width - len(r)) / 2
+            for i, n in enumerate(r):
+                out[n] = {"level": L, "x": round(x0 + offset + i, 2), "y": y0 + height - 1 - L}
+        blocks.append({"id": c, "x0": x0, "x1": x0 + width - 1, "y0": y0, "y1": y0 + height - 1})
+        band_h = max(band_h, height)
+        x0 += width + gap
+    # foundations of every cluster in a band on the band's bottom row
+    for b in blocks:
+        bottom = max(x["y1"] for x in blocks if x["y0"] == b["y0"])
+        shift = bottom - b["y1"]
+        if shift:
+            for n in members[b["id"]]:
+                out[n]["y"] += shift
+            b["y0"] += shift
+            b["y1"] += shift
+    return out, blocks
 
 
 def crossings(pos, deps):

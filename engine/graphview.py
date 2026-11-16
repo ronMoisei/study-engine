@@ -2,9 +2,9 @@
 import re
 import urllib.parse
 
-from . import learn
+from . import clusters, learn
 from .graph import LATERAL, Graph
-from .layout import layout, layout_blocks
+from .layout import layout, layout_clusters
 from .learner import statuses
 
 
@@ -68,25 +68,39 @@ def graph_payload(cfg, group=None, focus=None, around=1):
         shown = set(g.nodes)
     deps = {n: [d for d in g.requires(n) if d in shown] for n in shown}
     topic_key = lambda i: (g.nodes[i].topic or "", g.nodes[i].name.lower())  # noqa: E731
-    if not focus and not group:                             # all courses: one block per course, side by side
-        pos = layout_blocks(shown, deps, lambda i: group_of(cfg, g.nodes[i]), key=topic_key)
-    else:
-        pos = layout(shown, deps, key=topic_key)
-    nodes = []
-    for i in sorted(shown):
-        n = g.nodes[i]
-        nodes.append({"id": i, "name": n.name, "kind": n.kind, "topic": n.topic, "group": group_of(cfg, n),
-                      "status": st.get(i, "untested"), "concept": n.is_concept, "readonly": n.readonly,
-                      "focus": i == focus, **pos[i]})
     edges = [{"from": n, "to": d, "type": "requires"} for n in sorted(shown) for d in deps[n]]
     for i in sorted(shown):
         for p, t in g.nodes[i].edges:
             if p in LATERAL and t in shown and i < t:
                 edges.append({"from": i, "to": t, "type": p})
+    knowledge = not focus and not group                     # all knowledge: clustered by concept, not by course
+    cluster_of, cluster_list = {}, []
+    if knowledge:
+        cluster_of, names = clusters.cluster(shown, [(e["from"], e["to"]) for e in edges],
+                                             lambda i: g.nodes[i].topic or g.nodes[i].domain)
+        # grid cells are ~2.8x wider than tall in the panel, so 0.6 grid aspect ≈ a 1.6:1 picture
+        pos, blocks = layout_clusters(shown, deps, cluster_of.get, key=topic_key, aspect=0.6)
+        size = {}
+        for c in cluster_of.values():
+            size[c] = size.get(c, 0) + 1
+        cluster_list = [{**b, "name": names[b["id"]], "size": size[b["id"]]} for b in blocks]
+    else:
+        pos = layout(shown, deps, key=topic_key)
+    nodes = []
+    for i in sorted(shown):
+        n = g.nodes[i]
+        x = {"id": i, "name": n.name, "kind": n.kind, "topic": n.topic, "group": group_of(cfg, n),
+             "status": st.get(i, "untested"), "concept": n.is_concept, "readonly": n.readonly,
+             "focus": i == focus, **pos[i]}
+        if knowledge:
+            text = " ".join(str(n.statement or "").split())
+            x.update(cluster=cluster_of[i], summary=text[:240] + ("…" if len(text) > 240 else ""))
+        nodes.append(x)
     counts = {}
     for x in nodes:
         counts[x["status"]] = counts.get(x["status"], 0) + 1
     return {"nodes": nodes, "edges": edges, "groups": dict(sorted(groups.items())), "group": group,
+            "clusters": cluster_list,
             "focus": focus, "levels": max((p["level"] for p in pos.values()), default=-1) + 1,
             "status_counts": counts, "total_nodes": len(g.nodes)}
 

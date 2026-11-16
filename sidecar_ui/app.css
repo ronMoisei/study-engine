@@ -54,7 +54,26 @@ h4 { margin: 14px 0 4px; font-size: 13px; }
 .node.readonly rect { stroke-dasharray: 4 3; }
 .node.focus rect { stroke: var(--s-accent); stroke-width: 3; }
 .node.dim { opacity: .18; }
-.block-label { fill: var(--s-fg); font-size: 15px; font-weight: 700; }
+/* all-knowledge view: dots, soft cluster glows, small labels */
+svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0c0e 70%); }
+.cluster-label { font: 600 15px "Cascadia Mono", Consolas, monospace; letter-spacing: .02em; pointer-events: none; }
+.edge.k { stroke: var(--s-fg); stroke-opacity: .22; stroke-width: 1; }
+.edge.k.lateral { stroke: var(--s-accent); stroke-opacity: .45; stroke-dasharray: 3 4; }
+.edge.k.hot { stroke-opacity: .95; stroke-width: 1.6; }
+.edge.k.dim { stroke-opacity: .05; }
+.node.dot circle { fill: #ececec; stroke: none; }
+.node.dot circle.hit { fill: transparent; }
+.node.dot text { fill: var(--s-fg); fill-opacity: .7; font: 9.5px "Cascadia Mono", Consolas, monospace; pointer-events: none; }
+.node.dot:hover circle:not(.hit) { r: 6.5; }
+.node.dot:hover text { fill-opacity: 1; }
+.st-dot-misconception circle:not(.hit) { fill: var(--st-misconception) !important; }
+.st-dot-fragile circle:not(.hit) { fill: var(--st-fragile) !important; }
+.st-dot-in_progress circle:not(.hit) { fill: var(--st-in_progress) !important; }
+.st-dot-held circle:not(.hit) { fill: var(--st-held) !important; }
+svg.far .node.dot text { display: none; }
+.kcard { position: absolute; z-index: 3; width: 290px; background: #161618; border: 1px solid var(--s-line); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.5); pointer-events: none; font-size: 12px; }
+.kcard b { display: block; margin-bottom: 4px; font-size: 13px; }
+.kcard-text p { margin: 0 0 6px; }
 .edge { fill: none; stroke: var(--s-muted); stroke-opacity: .55; stroke-width: 1.2; }
 .edge.lateral { stroke-dasharray: 4 4; stroke: var(--s-accent); stroke-opacity: .5; }
 .edge.dim { stroke-opacity: .06; }

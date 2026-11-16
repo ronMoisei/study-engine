@@ -10,7 +10,9 @@ const STATUS = ["misconception", "fragile", "in_progress", "untested", "held"];
 const EASE = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
 const DECISION = { new: "NEW", extends: "ADDS TO NOTE", covered: "ALREADY COVERED", merged: "MERGED" };
 const NODE_W = 172, NODE_H = 34, COL = 196, ROW = 74;
-const ALL = "__all__";                                  // graph group value meaning "every course and domain"
+const ALL = "__all__";                                  // graph group value meaning "all knowledge"
+const KCOL = 130, KROW = 46;                            // all-knowledge view: dot grid
+const PALETTE = ["#a26be0", "#3fb3ad", "#c9b23e", "#55b86a", "#d9705f", "#5f8fe0", "#d07fbf", "#86b63f", "#e09a4a", "#4fb0d9"];
 
 // ── host theme (same messages the app sends to its own sidecars) ──
 window.addEventListener("message", (ev) => {
@@ -175,7 +177,7 @@ const Graph = {
       if (g) { s.group = g[0]; return this.load(); }
     }
     const { sel, names, info } = this.els;
-    sel.replaceChildren(el("option", { value: ALL, selected: s.group === ALL && !s.focus }, `All courses (${d.total_nodes})`),
+    sel.replaceChildren(el("option", { value: ALL, selected: s.group === ALL && !s.focus }, `All knowledge, by concept (${d.total_nodes})`),
       ...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
     if (s.focus) sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`));
     names.replaceChildren(...d.nodes.map((n) => el("option", { value: n.name })));
@@ -205,6 +207,7 @@ const Graph = {
     if (!r.width) return;
     const focus = (s.data.nodes || []).find((n) => n.focus);
     if (focus) return this.center(focus);
+    if (this.knowledge()) return this.fit();            // the whole map first, like a sky chart
     const w = Math.max(...pos.map((p) => p.x)) + NODE_W, h = Math.max(...pos.map((p) => p.y)) + NODE_H;
     s.k = Math.min(1, Math.max(0.8, (r.width - 40) / w));   // keep labels readable; pan sideways if wider
     s.tx = (r.width - w * s.k) / 2;                    // centred; a wider graph overflows evenly on both sides
@@ -212,9 +215,13 @@ const Graph = {
     this.apply();
   },
 
+  knowledge() { return this.state.group === ALL && !this.state.focus; },
+
   draw() {
     const s = this.state, d = s.data, wrap = this.els.wrap;
     if (!d) return;
+    if (this.knowledge()) return this.drawKnowledge();
+    this.dims = { w: NODE_W, h: NODE_H };
     wrap.replaceChildren();
     const root = svg("svg");
     const defs = svg("defs");
@@ -238,13 +245,6 @@ const Graph = {
       path.dataset.a = e.from; path.dataset.b = e.to;
       g.append(path); this.edgeEls.push(path);
     }
-    if (s.group === ALL && !s.focus) {                  // all courses: name each block above its leftmost column
-      const left = {};
-      for (const n of d.nodes) left[n.group] = Math.min(left[n.group] ?? Infinity, pos[n.id].x);
-      for (const [grp, x] of Object.entries(left)) {
-        const t = svg("text", { x, y: -22, class: "block-label" }); t.textContent = grp; g.append(t);
-      }
-    }
     this.nodeEls = {};
     for (const n of d.nodes) {
       const p = pos[n.id];
@@ -260,13 +260,83 @@ const Graph = {
       g.append(ng); this.nodeEls[n.id] = ng;
     }
     this.pos = pos;
+    this.finish(root);
+  },
+
+  finish(root) {
     this.panzoom(root);
-    wrap.append(root, el("div", { class: "zoom" },
+    this.els.wrap.append(root, el("div", { class: "zoom" },
       el("button", { onclick: () => this.zoomBy(1.25), title: "zoom in" }, "+"),
       el("button", { onclick: () => this.zoomBy(0.8), title: "zoom out" }, "−"),
       el("button", { onclick: () => this.fit(), title: "show everything" }, "⤢"),
       el("button", { onclick: () => this.home(), title: "foundations" }, "⌂")));
     this.apply();
+  },
+
+  /** All knowledge: concept clusters as vertical columns of dots on a soft glow, links across clusters. */
+  drawKnowledge() {
+    const s = this.state, d = s.data, wrap = this.els.wrap;
+    this.dims = { w: 0, h: 0 };                         // positions are dot centres
+    wrap.replaceChildren();
+    const root = svg("svg", { class: "knowledge" });
+    const defs = svg("defs");
+    root.append(defs);
+    const g = svg("g"); root.append(g);
+    this.els.svg = root; this.els.g = g;
+    const pos = {};
+    for (const n of d.nodes) pos[n.id] = { x: n.x * KCOL, y: n.y * KROW };
+    const colour = {};
+    d.clusters.forEach((c, i) => { colour[c.id] = c.id === "unlinked" ? "#8a8a8a" : PALETTE[i % PALETTE.length]; });
+    // glows and names
+    const glows = svg("g"), names = svg("g");
+    d.clusters.forEach((c, i) => {
+      const ps = d.nodes.filter((n) => n.cluster === c.id).map((n) => pos[n.id]);
+      const x0 = Math.min(...ps.map((p) => p.x)), x1 = Math.max(...ps.map((p) => p.x));
+      const y0 = Math.min(...ps.map((p) => p.y)), y1 = Math.max(...ps.map((p) => p.y));
+      const grad = svg("radialGradient", { id: `glow${i}` });       // soft at every zoom level, unlike a blur
+      for (const [o, a] of [[0, 0.34], [0.55, 0.16], [1, 0]]) grad.append(svg("stop", { offset: o, "stop-color": colour[c.id], "stop-opacity": a }));
+      defs.append(grad);
+      glows.append(svg("ellipse", { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: (x1 - x0) / 2 + 110, ry: (y1 - y0) / 2 + 80, fill: `url(#glow${i})` }));
+      const t = svg("text", { x: (x0 + x1) / 2, y: y0 - 30, class: "cluster-label", fill: colour[c.id], "text-anchor": "middle" });
+      t.textContent = `${c.name} · ${c.size}`; names.append(t);
+    });
+    g.append(glows);
+    this.edgeEls = [];
+    for (const e of d.edges) {
+      if (e.type !== "requires" && !s.lateral) continue;
+      const a = pos[e.to], b = pos[e.from];
+      if (!a || !b) continue;
+      const line = svg("line", { class: `edge k${e.type === "requires" ? "" : " lateral"}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+      line.dataset.a = e.from; line.dataset.b = e.to;
+      g.append(line); this.edgeEls.push(line);
+    }
+    g.append(names);
+    this.nodeEls = {};
+    const card = el("div", { class: "kcard", style: "display:none" });
+    for (const n of d.nodes) {
+      const p = pos[n.id];
+      const ng = svg("g", { class: `node dot st-dot-${n.status}`, transform: `translate(${p.x},${p.y})`, style: "cursor:pointer" });
+      ng.append(svg("circle", { r: 9, class: "hit" }), svg("circle", { r: 4.5 }));
+      const t = svg("text", { y: 17, "text-anchor": "middle" });
+      t.textContent = n.name.length > 21 ? n.name.slice(0, 20) + "…" : n.name; ng.append(t);
+      ng.addEventListener("click", (ev) => { ev.stopPropagation(); card.style.display = "none"; this.select(n.id); });
+      ng.addEventListener("mouseenter", () => {
+        this.highlight(n.id);
+        const r = ng.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+        const cl = d.clusters.find((c) => c.id === n.cluster);
+        card.replaceChildren(el("b", {}, n.name), n.summary ? mdEl(n.summary, "kcard-text") : "",
+          el("div", { class: "muted" }, pill(n.status), ` ${cl ? cl.name : ""} · ${n.group}`));
+        card.style.display = "block";
+        const left = Math.min(r.left - w.left + 14, w.width - 300);
+        card.style.left = `${Math.max(6, left)}px`;
+        card.style.top = `${Math.max(6, r.top - w.top + 14)}px`;
+      });
+      ng.addEventListener("mouseleave", () => { this.highlight(null); card.style.display = "none"; });
+      g.append(ng); this.nodeEls[n.id] = ng;
+    }
+    this.pos = pos;
+    wrap.append(card);
+    this.finish(root);
   },
 
   highlight(id) {
@@ -300,21 +370,27 @@ const Graph = {
     s.tx = cx - (cx - s.tx) * (k / s.k); s.ty = cy - (cy - s.ty) * (k / s.k); s.k = k;
     this.apply();
   },
-  apply() { const s = this.state; this.els.g?.setAttribute("transform", `translate(${s.tx},${s.ty}) scale(${s.k})`); },
+  apply() {
+    const s = this.state;
+    this.els.g?.setAttribute("transform", `translate(${s.tx},${s.ty}) scale(${s.k})`);
+    this.els.svg?.classList.toggle("far", s.k < 0.55);   // zoomed out: hide dot labels, keep cluster names
+  },
   fit() {
     const s = this.state, pos = Object.values(this.pos || {});
     if (!pos.length) return;
     const r = this.els.svg.getBoundingClientRect();
     if (!r.width) return;
-    const w = Math.max(...pos.map((p) => p.x)) + NODE_W, h = Math.max(...pos.map((p) => p.y)) + NODE_H;
-    s.k = Math.min(1.2, Math.max(0.15, Math.min((r.width - 40) / w, (r.height - 40) / h)));
-    s.tx = (r.width - w * s.k) / 2; s.ty = 20;
+    const m = this.dims.w ? 0 : 60;                     // dot view: room for glows and cluster names
+    const x0 = Math.min(...pos.map((p) => p.x)) - m, y0 = Math.min(...pos.map((p) => p.y)) - m;
+    const w = Math.max(...pos.map((p) => p.x)) + this.dims.w + m - x0, h = Math.max(...pos.map((p) => p.y)) + this.dims.h + m - y0;
+    s.k = Math.min(1.2, Math.max(0.08, Math.min((r.width - 40) / w, (r.height - 40) / h)));
+    s.tx = (r.width - w * s.k) / 2 - x0 * s.k; s.ty = 20 - y0 * s.k;
     this.apply();
   },
   center(n) {
     const s = this.state, r = this.els.svg.getBoundingClientRect(), p = this.pos[n.id];
     s.k = Math.max(s.k, 0.8);
-    s.tx = r.width / 2 - (p.x + NODE_W / 2) * s.k; s.ty = r.height / 2 - (p.y + NODE_H / 2) * s.k;
+    s.tx = r.width / 2 - (p.x + this.dims.w / 2) * s.k; s.ty = r.height / 2 - (p.y + this.dims.h / 2) * s.k;
     this.apply();
   },
 
