@@ -2,7 +2,7 @@
 import re
 import urllib.parse
 
-from . import clusters, learn
+from . import clusters, learn, topics
 from .graph import LATERAL, Graph
 from .layout import layout, layout_clusters
 from .learner import statuses
@@ -13,6 +13,9 @@ def _rel(path, base):
         return path.resolve().relative_to(base.resolve())
     except (ValueError, AttributeError):
         return None
+
+
+COURSE_ROW = 8                                   # course view: at most this many concepts side by side
 
 
 def group_of(cfg, node):
@@ -78,13 +81,24 @@ def graph_payload(cfg, group=None, focus=None, around=1, g=None):
             if p in LATERAL and t in shown and i < t:
                 edges.append({"from": i, "to": t, "type": p})
     knowledge = not focus and not group                     # all knowledge: clustered by concept, not by course
-    cluster_of, cluster_list = {}, []
+    cluster_of, cluster_list, sections = {}, [], []
     if knowledge:
         cluster_of, names = clusters.cluster(shown, [(e["from"], e["to"]) for e in edges],
                                              lambda i: g.nodes[i].topic or g.nodes[i].domain)
         # grid cells are ~2.8x wider than tall in the panel, so 0.6 grid aspect ≈ a 1.6:1 picture
         pos, blocks = layout_clusters(shown, deps, cluster_of.get, key=topic_key, aspect=0.6)
         cluster_list = _macro(g, st, shown, deps, cluster_of, names, pos, blocks)
+    elif group:                                              # one course: a block per topic, wide levels wrapped
+        topic_of = lambda i: g.nodes[i].topic or "general"  # noqa: E731
+        pos, blocks = layout_clusters(shown, deps, topic_of, key=topic_key, aspect=0.6, max_row=COURSE_ROW)
+        titles = {}
+        for d in sorted({g.nodes[i].domain for i in shown if g.nodes[i].domain}):
+            titles.update({t["slug"]: t["title"] for t in topics.load(cfg, d)})
+        size = {}
+        for i in shown:
+            size[topic_of(i)] = size.get(topic_of(i), 0) + 1
+        sections = [{**b, "title": titles.get(b["id"], b["id"].replace("-", " ").capitalize()), "size": size[b["id"]]}
+                    for b in blocks]
     else:
         pos = layout(shown, deps, key=topic_key)
     nodes = []
@@ -112,7 +126,7 @@ def graph_payload(cfg, group=None, focus=None, around=1, g=None):
                     agg[(a, b)] = agg.get((a, b), 0) + 1
         cluster_edges = [{"from": a, "to": b, "count": c} for (a, b), c in sorted(agg.items())]
     return {"nodes": nodes, "edges": edges, "groups": dict(sorted(groups.items())), "group": group,
-            "clusters": cluster_list, "cluster_edges": cluster_edges,
+            "clusters": cluster_list, "cluster_edges": cluster_edges, "sections": sections,
             "focus": focus, "levels": max((p["level"] for p in pos.values()), default=-1) + 1,
             "status_counts": counts, "total_nodes": len(g.nodes)}
 

@@ -3,11 +3,11 @@
 The pipeline it feeds (stages):
   1. offline   lecture video (or audio) + slides -> Raw Notes/<lecture>/<lecture>_Raw_Notes.md
                (the local lecture pipeline: Whisper + slide matching + local vision)
-  2. structure a smart model reads new raw notes / slides -> the topics and concepts they introduce
-  3. write     a medium model writes each concept atomically (definition, theorem, algorithm…) with
-               its prerequisites
-  4. organize  a smart model checks the links and places the concepts in the graph
-Stages 2–4 end in an Inbox proposal; nothing enters Graph/ without approval.
+  2. polish    Hydrogen (high) turns each raw note into full notes that keep every derivation and reason
+  3. atomize   Hydrogen (medium) writes the atomic concepts of each full note (no links yet)
+  4. graph     Argon, once every lecture is done: the course's chapters and duplicates, then the links,
+               read from the reasoning in the full notes (engine/coursesync.py)
+Stage 4 ends in ONE Inbox proposal per course; nothing enters Graph/ without approval.
 This module answers "what would Sync process?": lectures not yet transcribed, raw notes and slide decks
 not yet in the graph.
 """
@@ -59,7 +59,8 @@ def _rel(cfg, p):
 def _ingested(cfg, graph):
     """Material files (relative to Material/) already analysed: a proposal was made from them, or a graph note
     cites them as a source."""
-    seen = {p["source"] for p in ingest.list_proposals(cfg)}
+    from . import coursesync
+    seen = {p["source"] for p in ingest.list_proposals(cfg)} | coursesync.graphed(cfg)
     for n in graph.nodes.values():
         for s in n.sources or []:
             path = str(s).strip("[]").split("#")[0].replace("\\", "/")
@@ -113,6 +114,8 @@ def inventory(cfg):
         row = {"course": c.name, "lectures": len(lectures), "video": n_video, "audio_only": audio_only,
                "transcribed": len(lectures) - len(to_transcribe), "to_transcribe": to_transcribe, "raw_new": raw_new,
                "slides_new": slides_new, "concepts": per_course.get(c.name, 0),
+               "raw_all": sorted(_rel(cfg, f) for f in raw.values()),          # a rebuild processes all of them
+               "slides_all": sorted(_rel(cfg, f) for f in slides),
                "misrouted": [{"lecture": n, "belongs_to": o} for n, o in misrouted],
                "skipped_recordings": other,              # in 03_Other/ or test/: not transcribed by the pipeline
                "source": "lectures" if lectures else ("slides" if slides else "none")}

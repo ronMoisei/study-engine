@@ -32,8 +32,18 @@ class Config:
         "structure": "agy:gemini-4-argon-medium",
         "write": "agy:gemini-4-hydrogen-medium",
         "relate": "agy:gemini-4-argon-medium",   # prerequisite direction for candidate pairs, batched
+        # Sync Knowledge v4: notes first, graph last (engine/coursesync.py)
+        "polish": "agy:gemini-4-hydrogen-high",       # raw lecture notes -> full notes (keeps every reason)
+        "atomize": "agy:gemini-4-hydrogen-medium",    # full notes -> atomic concept drafts
+        "consolidate": "agy:gemini-4-argon-medium",   # a course's drafts -> chapters, duplicates (once per course)
+        "link": "agy:gemini-4-argon-medium",          # one lecture's full notes -> prerequisite links with reasons
     })
-    ingest_method: str = "v3"                   # "v3": structure -> write -> organize; "v2": extract -> group -> relate
+    # "v4": polish -> atomize -> course graph (Sync Knowledge); "v3": structure -> write -> organize per file;
+    # "v2": extract -> group -> relate. Analysing a single file in the Inbox always uses the per-file pipeline.
+    ingest_method: str = "v4"
+    sync_workers: int = 3                       # lectures polished/atomized in parallel during a Sync
+    job_timeout_s: dict = field(default_factory=lambda: {"polish": 900, "atomize": 420, "consolidate": 600,
+                                                          "link": 600})
     # Stage 1 (offline lecture pipeline) on THIS PC — set in %LOCALAPPDATA%/study-engine/pc.json, never synced
     lecture_pipeline: str = ""                  # folder holding the pipeline's ingest.py
     lecture_python: str = ""                    # its Python (CUDA, Whisper)
@@ -116,7 +126,7 @@ def _workspace_above(start: Path):
 
 
 # Settings that must be the same on every PC live in the synced workspace, not in a per-PC config.json.
-SHARED_KEYS = {"agy_project", "teach_model", "models", "dry_run", "ingest_method"}
+SHARED_KEYS = {"agy_project", "teach_model", "models", "dry_run", "ingest_method", "sync_workers", "job_timeout_s"}
 PC_KEYS = {"lecture_pipeline", "lecture_python"}             # paths that exist on one PC only
 
 

@@ -100,6 +100,8 @@ svg.far .node.dot text { display: none; }
 .kcard b { display: block; margin-bottom: 4px; font-size: 13px; }
 .kcard-text p { margin: 0 0 6px; }
 .edge { fill: none; stroke: var(--s-muted); stroke-opacity: .55; stroke-width: 1.2; }
+.section { fill: var(--s-muted); fill-opacity: .05; stroke: var(--s-muted); stroke-opacity: .25; }
+.section-title { fill: var(--s-fg, currentColor); font-size: 15px; font-weight: 600; opacity: .85; }
 .edge.lateral { stroke-dasharray: 4 4; stroke: var(--s-accent); stroke-opacity: .5; }
 .edge.dim { stroke-opacity: .06; }
 .edge.hot { stroke: var(--s-accent); stroke-opacity: 1; stroke-width: 2; }

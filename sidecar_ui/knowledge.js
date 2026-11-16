@@ -24,9 +24,9 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && Knowledg
 const KnowledgeSync = {
   STAGES: [
     ["1", "Offline lectures", "video (or audio) + slides → raw notes, on this PC (Whisper, slide matching, local vision)"],
-    ["2", "Structure", "Argon reads the new raw notes / slides → the topics and concepts they introduce"],
-    ["3", "Atomic concepts", "Hydrogen writes each concept: definition, theorem, algorithm… with prerequisites"],
-    ["4", "Organize", "Argon checks the links and places the concepts in the course graph and in All Knowledge"],
+    ["2", "Full notes", "Hydrogen (high) polishes each raw note into full notes that keep every derivation and every “why”"],
+    ["3", "Atomic concepts", "Hydrogen (medium) writes the atomic concepts of each full note: definition, theorem, algorithm…"],
+    ["4", "Course graph", "Argon, once every lecture is done: chapters, duplicates, then the links it reads from the reasoning in the full notes — one Inbox proposal per course"],
   ],
   async open() {
     const wrap = Graph.els.wrap;
@@ -39,9 +39,15 @@ const KnowledgeSync = {
     const count = (n, what) => `${n} ${what}`;
     const rows = r.courses.filter((c) => c.lectures || c.slides_new.length || c.concepts || c.misrouted.length);
     const work = (c) => c.to_transcribe.length + c.raw_new.length + (c.source === "slides" ? c.slides_new.length : 0);
-    const picks = new Map();
-    const pick = (c) => { const cb = el("input", { type: "checkbox", disabled: !work(c), title: work(c) ? "include in this Sync" : "nothing new" }); picks.set(c.course, cb); return cb; };
-    const controls = this.controls(picks);
+    const picks = new Map(), rebuilds = new Map();
+    const pick = (c) => { const cb = el("input", { type: "checkbox", disabled: !work(c) && !c.concepts, title: work(c) ? "include in this Sync" : "nothing new (tick Rebuild to redo the course)" }); picks.set(c.course, cb); return cb; };
+    const rebuild = (c) => {
+      if (!c.concepts || !(c.raw_all.length || c.slides_all.length)) return "—";
+      const cb = el("input", { type: "checkbox", title: "redo every lecture with the new pipeline; on approval the course's current notes move to .study/retired/ (not deleted)" });
+      cb.addEventListener("change", () => { if (cb.checked) { picks.get(c.course).disabled = false; picks.get(c.course).checked = true; } picks.get(c.course).dispatchEvent(new Event("change")); });
+      rebuilds.set(c.course, cb); return cb;
+    };
+    const controls = this.controls(picks, rebuilds);
     dr.replaceChildren(
       el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
       el("h3", {}, "Sync Knowledge"),
@@ -52,7 +58,7 @@ const KnowledgeSync = {
         el("span", { class: "pill" }, count(t.slides_new, "slide decks not in the graph")),
         t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : ""),
       el("table", { class: "inv" },
-        el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts"].map((h) => el("th", {}, h))),
+        el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts", "Rebuild"].map((h) => el("th", {}, h))),
         ...rows.map((c) => el("tr", {},
           el("td", {}, pick(c)),
           el("td", {}, c.course, c.misrouted.length ? el("div", { class: "warn" }, `⚠ ${c.misrouted.length} raw notes here belong to ${c.misrouted[0].belongs_to}`) : "",
@@ -62,21 +68,30 @@ const KnowledgeSync = {
           el("td", {}, c.to_transcribe.length || "—"),
           el("td", {}, c.raw_new.length || "—"),
           el("td", {}, c.slides_new.length || "—"),
-          el("td", {}, c.concepts || "—")))),
+          el("td", {}, c.concepts || "—"),
+          el("td", {}, rebuild(c))))),
       el("div", { class: "muted" }, "Slide decks are analysed only for courses without recordings (their raw notes already carry the slide text)."),
       controls);
-    if (this.job) this.watch(this.job, controls);                  // a run in progress: keep showing it
+    if (this.job) return this.watch(this.job, controls);           // a run in progress: keep showing it
+    try {                                                           // the last run, whichever PC ran it
+      const last = await api("GET", "/knowledge/last-run");
+      if (last.ended) controls.prepend(el("div", { class: "muted lastrun" },
+        `Last Sync: ${last.ended.replace("T", " ").slice(0, 16)} — ${last.proposals.length} proposals`,
+        last.errors.length ? `, ${last.errors.length} errors` : "", last.stopped ? " (stopped)" : "",
+        ...(last.waiting || []).map((w) => el("div", { class: "warn" }, `${w.course}: ${w.reason}`))));
+    } catch (e) { /* no report yet */ }
   },
 
   /** Estimate → Run → progress → result. Every cloud call is counted before anything runs. */
-  controls(picks) {
+  controls(picks, rebuilds) {
     const box = el("div", { class: "synccontrols" });
     const chosen = () => [...picks].filter(([, cb]) => cb.checked).map(([c]) => c);
+    const rebuilding = () => [...rebuilds].filter(([c, cb]) => cb.checked && picks.get(c).checked).map(([c]) => c);
     const transcribe = el("input", { type: "checkbox", checked: true });
     const out = el("div", { class: "muted" });
     const run = el("button", { class: "primary", disabled: true, onclick: async () => {
       run.disabled = true;
-      try { const job = await api("POST", "/knowledge/sync", { courses: chosen(), transcribe: transcribe.checked }); this.job = job.id; this.watch(job.id, box); }
+      try { const job = await api("POST", "/knowledge/sync", { courses: chosen(), transcribe: transcribe.checked, rebuild: rebuilding() }); this.job = job.id; this.watch(job.id, box); }
       catch (e) { out.textContent = e.message; run.disabled = false; }
     } }, "Run Sync");
     const est = el("button", { onclick: async () => {
@@ -84,12 +99,20 @@ const KnowledgeSync = {
       if (!cs.length) { out.textContent = "Tick at least one course."; return; }
       out.textContent = "estimating…";
       try {
-        const e = await api("GET", "/knowledge/estimate?" + cs.map((c) => "course=" + encodeURIComponent(c)).join("&"));
+        const q = cs.map((c) => "course=" + encodeURIComponent(c)).concat(rebuilding().map((c) => "rebuild=" + encodeURIComponent(c)));
+        const e = await api("GET", "/knowledge/estimate?" + q.join("&"));
         const t = e.total, m = e.models;
+        const v4 = e.method === "v4";
         out.replaceChildren(
-          el("div", {}, el("b", {}, `${t.files} files → about ${t.calls} cloud calls`),
+          v4 ? el("div", {}, el("b", {}, `${t.files} lectures → about ${t.calls} cloud calls`),
+            ` (${t.polish} full-note · ${t.atomize} atomic-concept · ${t.graph} course-graph calls)`,
+            t.prepared ? el("span", { class: "muted" }, ` · ${t.prepared} lectures already prepared`) : "")
+            : el("div", {}, el("b", {}, `${t.files} files → about ${t.calls} cloud calls`),
             ` (${t.structure} structure · ${t.write} atomic-concept · ${t.relate} link calls)`),
-          el("div", { class: "muted" }, `models: ${m.structure} · ${m.write} · ${m.relate}`),
+          el("div", { class: "muted" }, v4 ? `models: ${m.polish} · ${m.atomize} · ${m.consolidate} · ${m.link} — ${e.workers} lectures at a time`
+            : `models: ${m.structure} · ${m.write} · ${m.relate}`),
+          ...(v4 ? e.courses.filter((c) => c.rebuild && c.retires).map((c) => el("div", { class: "warn" },
+            `Rebuild ${c.course.split(" - ")[0]}: when you approve its proposal, its ${c.retires} current notes move to .study/retired/ (kept, not deleted)`)) : []),
           t.transcribe ? el("div", {}, `${t.transcribe} lectures to transcribe first `,
             e.stage1_available ? el("span", { class: "muted" }, "(on this PC, free, slow: GPU)") : el("span", { class: "warn" }, "— the lecture pipeline is not set up on this PC: they will be skipped")) : "");
         if (!e.stage1_available) { transcribe.checked = false; transcribe.disabled = true; }
@@ -106,14 +129,16 @@ const KnowledgeSync = {
     const line = el("div", { class: "syncprogress" }, "starting…");
     const stop = el("button", { onclick: async () => { await api("POST", "/knowledge/stop", { job: jid }); stop.disabled = true; stop.textContent = "stopping after this file…"; } }, "Stop");
     box.replaceChildren(el("div", { class: "row" }, line, stop));
-    const STAGE = { transcribe: "1 · transcribing lectures", structure: "2 · Argon maps the knowledge", write: "3 · Hydrogen writes atomic concepts", relate: "4 · Argon organizes links" };
+    const STAGE = { transcribe: "1 · transcribing lectures", structure: "2 · Argon maps the knowledge", write: "3 · Hydrogen writes atomic concepts", relate: "4 · Argon organizes links",
+      polish: "2–3 · Hydrogen writes full notes and atomic concepts", consolidate: "4 · Argon organizes the course", link: "4 · Argon links the concepts from the full notes" };
     this.poll = setInterval(async () => {
       let j;
       try { j = await api("GET", `/jobs/${jid}`); } catch (e) { return; }
       const p = j.progress || {};
       if (j.state === "running") {
         line.replaceChildren(el("b", {}, STAGE[p.stage] || p.stage || "starting"), " — ", p.course || "",
-          p.file ? el("div", { class: "muted" }, `file ${p.done + 1}/${p.total}: ${p.file.split("/").pop()}${p.steps ? ` · step ${p.step + 1}/${p.steps}` : ""}`) : "");
+          p.stage === "polish" ? el("div", { class: "muted" }, `${p.done}/${p.total} lectures ready${p.file ? ` · last: ${p.file.split("/").pop()}` : ""}`)
+            : p.file ? el("div", { class: "muted" }, `${p.stage === "link" ? "lecture" : "file"} ${p.done + 1}/${p.total}: ${p.file.split("/").pop()}${p.steps ? ` · step ${p.step + 1}/${p.steps}` : ""}`) : "");
         return;
       }
       clearInterval(this.poll); this.job = null;
@@ -122,6 +147,7 @@ const KnowledgeSync = {
         j.state === "error" ? el("div", { class: "error" }, j.error) :
           el("div", {}, el("b", {}, r.stopped ? "Stopped." : "Sync done."), ` ${r.proposals?.length || 0} new proposals in the Inbox`,
             r.transcribed?.length ? ` · transcribed: ${r.transcribed.join(", ")}` : ""),
+        ...(r.waiting || []).map((w) => el("div", { class: "warn" }, `${w.course}: ${w.reason}`)),
         ...(r.errors || []).map((e) => el("div", { class: "warn" }, e)),
         el("button", { class: "primary", onclick: () => document.querySelector('#tabs button[data-tab="inbox"]').click() }, "Review in the Inbox"));
     }, 1500);

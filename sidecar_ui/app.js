@@ -278,6 +278,12 @@ const Graph = {
     this.els.svg = root; this.els.g = g;
     const pos = {};
     for (const n of d.nodes) pos[n.id] = { x: n.x * COL, y: n.y * ROW };
+    for (const b of d.sections || []) {                  // one block per topic of the course
+      const x = b.x0 * COL - 14, y = b.y0 * ROW - 40;
+      g.append(svg("rect", { class: "section", x, y, rx: 10, width: (b.x1 - b.x0) * COL + NODE_W + 28, height: (b.y1 - b.y0) * ROW + NODE_H + 54 }));
+      const t = svg("text", { class: "section-title", x: x + 12, y: y + 22 });
+      t.textContent = `${b.title} · ${b.size}`; g.append(t);
+    }
     this.edgeEls = [];
     for (const e of d.edges) {
       if (e.type !== "requires" && !s.lateral) continue;

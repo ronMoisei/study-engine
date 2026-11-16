@@ -85,7 +85,18 @@ def _arrange(nodes, deps, lv, key=None):
     return rows
 
 
-def layout_clusters(nodes, deps, cluster_of, key=None, gap=1.5, band_gap=2.5, aspect=1.6):
+def wrap(rows, max_row):
+    """{level: [ids]} -> grid rows bottom-up, [(level, [ids])]: a level wider than `max_row` is split into several
+    rows (an almost flat course would otherwise be one row hundreds of nodes wide)."""
+    out = []
+    for L in sorted(rows):
+        r = rows[L]
+        step = max_row or len(r) or 1
+        out += [(L, r[i:i + step]) for i in range(0, len(r), step)]
+    return out
+
+
+def layout_clusters(nodes, deps, cluster_of, key=None, gap=1.5, band_gap=2.5, aspect=1.6, max_row=None):
     """The all-knowledge view: one vertical block per concept cluster (foundations at its bottom, levels counted
     inside the cluster), blocks packed left to right in bands like shelves so the whole map is about `aspect`
     times wider than tall. Clusters sharing many links are placed next to each other. Links between clusters are
@@ -116,8 +127,8 @@ def layout_clusters(nodes, deps, cluster_of, key=None, gap=1.5, band_gap=2.5, as
         ns = members[c]
         inner = {n: [d for d in deps[n] if d in set(ns)] for n in ns}
         lv = levels(ns, inner)
-        rows = _arrange(ns, inner, lv, key)
-        parts[c] = (rows, max(len(r) for r in rows.values()), max(lv.values()) + 1)
+        rows = wrap(_arrange(ns, inner, lv, key), max_row)
+        parts[c] = (rows, max(len(r) for _, r in rows), len(rows))
     # shelf packing: target band width from the total area
     area = sum((w + gap) * (h + band_gap) for _, w, h in parts.values())
     target = max(max(w for _, w, _ in parts.values()), (area * aspect) ** 0.5) if parts else 0
@@ -126,10 +137,10 @@ def layout_clusters(nodes, deps, cluster_of, key=None, gap=1.5, band_gap=2.5, as
         rows, width, height = parts[c]
         if x0 > 0 and x0 + width > target:
             x0, y0, band_h = 0.0, y0 + band_h + band_gap, 0
-        for L, r in rows.items():
+        for k, (L, r) in enumerate(rows):
             offset = (width - len(r)) / 2
             for i, n in enumerate(r):
-                out[n] = {"level": L, "x": round(x0 + offset + i, 2), "y": y0 + height - 1 - L}
+                out[n] = {"level": L, "x": round(x0 + offset + i, 2), "y": y0 + height - 1 - k}
         blocks.append({"id": c, "x0": x0, "x1": x0 + width - 1, "y0": y0, "y1": y0 + height - 1})
         band_h = max(band_h, height)
         x0 += width + gap

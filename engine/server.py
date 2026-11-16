@@ -122,7 +122,7 @@ class Engine:
         threading.Thread(target=work, daemon=True).start()
         return job
 
-    def start_sync(self, courses, transcribe=True):
+    def start_sync(self, courses, transcribe=True, rebuild=()):
         """Sync Knowledge for the chosen courses, in the background; poll /jobs/<id>."""
         import time
         import uuid
@@ -139,7 +139,8 @@ class Engine:
             try:
                 with self.ingest_lock:
                     job["report"] = syncrun.run(self.cfg, self.store, self.llm, self.embedder, courses, transcribe,
-                                                progress=lambda d: job.update(progress=d), stop=lambda: job["stop"])
+                                                progress=lambda d: job.update(progress=d), stop=lambda: job["stop"],
+                                                rebuild=[c for c in rebuild if c in courses])
                 job.update(state="done")
             except Exception as e:  # noqa: BLE001
                 job.update(state="error", error=f"{type(e).__name__}: {e}")
@@ -247,10 +248,15 @@ def make_handler(engine, token=None):
                     return self._send(200, knowledge_sync.inventory(engine.cfg))
                 if method == "GET" and path == "/knowledge/estimate":
                     from . import syncrun
-                    return self._send(200, syncrun.estimate(engine.cfg, query.get("course", [])))
+                    return self._send(200, syncrun.estimate(engine.cfg, query.get("course", []),
+                                                                   query.get("rebuild", [])))
                 if method == "POST" and path == "/knowledge/sync":
                     b = self._body()
-                    return self._send(200, engine.start_sync(b.get("courses") or [], bool(b.get("transcribe", True))))
+                    return self._send(200, engine.start_sync(b.get("courses") or [], bool(b.get("transcribe", True)),
+                                                                b.get("rebuild") or []))
+                if method == "GET" and path == "/knowledge/last-run":
+                    f = engine.cfg.shared_dir / "sync" / "last_run.json"
+                    return self._send(200, json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {})
                 if method == "POST" and path == "/knowledge/stop":
                     job = engine.jobs.get(self._body().get("job", ""))
                     if job:

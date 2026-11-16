@@ -2,8 +2,11 @@
 
   stage 1   offline lecture pipeline on THIS PC (pc.json: lecture_pipeline, lecture_python), for lectures without
             raw notes; resumable through the pipeline's own checkpoints
-  stage 2-4 for each new raw note (or, for a course without recordings, each slide deck):
-            ingest v3 = structure (Argon) -> atomic concepts (Hydrogen) -> organize links (Argon) -> one proposal
+  stage 2-4 v4 (default, engine/coursesync.py): every new raw note (or, for a course without recordings, slide deck)
+            is polished into full notes (Hydrogen high) and atomized (Hydrogen medium), several lectures in
+            parallel; once ALL of them are done, Argon builds the course graph from the full notes -> ONE proposal
+            per course. A rebuild redoes every lecture of the course and replaces its notes on approval.
+            v3 (ingest_method "v3"): structure -> atomic concepts -> organize links, one proposal per file
   approval  approve_confident() in ingest.py; when every raw note of a course has an approved proposal, the
             course's old atomic notes are retired (they were re-derived): .study/rederived.json
 
@@ -18,7 +21,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import ingest, knowledge_sync, learn
+from . import coursesync, ingest, knowledge_sync, learn
 
 LOCK_STALE_S = 6 * 3600
 
@@ -65,9 +68,11 @@ def lecture_pipeline(cfg):
     return None
 
 
-def _files(row):
-    """Files stages 2-4 process for a course: new raw notes; slide decks only when there are no recordings."""
-    return list(row["raw_new"]) + (list(row["slides_new"]) if row["source"] == "slides" else [])
+def _files(row, rebuild=False):
+    """Files stages 2-4 process for a course: new raw notes; slide decks only when there are no recordings.
+    rebuild: every raw note (and deck) of the course."""
+    raw, slides = ("raw_all", "slides_all") if rebuild else ("raw_new", "slides_new")
+    return list(row[raw]) + (list(row[slides]) if row["source"] == "slides" else [])
 
 
 def _chars(cfg, rel):
@@ -84,9 +89,11 @@ def _chars(cfg, rel):
         return 0
 
 
-def estimate(cfg, courses):
+def estimate(cfg, courses, rebuild=()):
     """Per course: lectures to transcribe (stage 1) and the cloud calls stages 2-4 would make."""
     inv = {r["course"]: r for r in knowledge_sync.inventory(cfg)["courses"]}
+    if cfg.ingest_method == "v4":
+        return _estimate_v4(cfg, inv, courses, set(rebuild))
     out, total = [], {"files": 0, "structure": 0, "write": 0, "relate": 0, "transcribe": 0}
     for c in courses:
         row = inv.get(c)
@@ -106,58 +113,129 @@ def estimate(cfg, courses):
             "models": {k: cfg.models.get(k) for k in ("structure", "write", "relate")}}
 
 
+def _estimate_v4(cfg, inv, courses, rebuild):
+    from .graph import Graph
+    out, total = [], {"files": 0, "prepared": 0, "polish": 0, "atomize": 0, "graph": 0, "transcribe": 0}
+    graph = Graph.load(cfg) if rebuild else None
+    for c in courses:
+        row = inv.get(c)
+        if not row:
+            continue
+        files = _files(row, c in rebuild)
+        st = coursesync.load_state(cfg, c)
+        todo = [f for f in files if (st["lectures"].get(f) or {}).get("drafts") is None]
+        chars = [_chars(cfg, f) for f in todo]
+        e = {"course": c, "files": len(files), "prepared": len(files) - len(todo), "rebuild": c in rebuild,
+             "transcribe": len(row["to_transcribe"]),
+             "polish": sum(max(1, math.ceil(n / coursesync.POLISH_CHARS)) for n in chars),
+             "atomize": sum(max(1, math.ceil(0.7 * n / coursesync.ATOM_CHARS)) for n in chars),
+             "graph": (1 + len(files)) if files else 0,          # consolidate once + one link call per lecture
+             "chars": sum(chars), "retires": len(coursesync.retiring(cfg, graph, c)) if c in rebuild else 0}
+        out.append(e)
+        for k in total:
+            total[k] += e[k]
+    total["calls"] = total["polish"] + total["atomize"] + total["graph"]
+    return {"method": "v4", "courses": out, "total": total, "stage1_available": lecture_pipeline(cfg) is not None,
+            "workers": cfg.sync_workers,
+            "models": {k: cfg.models.get(k) for k in ("polish", "atomize", "consolidate", "link")}}
+
+
 # ── a run ──
 
-def run(cfg, store, llm, embedder, courses, transcribe=True, progress=None, stop=None):
-    """Run Sync for `courses`. progress(dict) gets updates; stop() -> True ends the run between files."""
-    report = {"courses": [], "proposals": [], "errors": [], "transcribed": []}
+def run(cfg, store, llm, embedder, courses, transcribe=True, progress=None, stop=None, rebuild=()):
+    """Run Sync for `courses`. progress(dict) gets updates; stop() -> True ends the run between files.
+    rebuild: courses whose every lecture is processed again (v4). The report is also saved to .study/sync/."""
+    report = {"courses": [], "proposals": [], "errors": [], "transcribed": [], "waiting": [],
+              "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "method": cfg.ingest_method, "rebuild": list(rebuild)}
     say = progress or (lambda d: None)
     acquire(cfg)
     try:
-        inv = {r["course"]: r for r in knowledge_sync.inventory(cfg)["courses"]}
-        lp = lecture_pipeline(cfg)
-        for c in courses:
-            row = inv.get(c)
-            if not row:
-                report["errors"].append(f"{c}: not a course folder")
-                continue
-            # stage 1 — offline transcription on this PC
-            if transcribe and row["to_transcribe"]:
-                if not lp:
-                    report["errors"].append(f"{c}: {len(row['to_transcribe'])} lectures not transcribed "
-                                            "(the lecture pipeline is not set up on this PC)")
-                else:
-                    say({"course": c, "stage": "transcribe", "done": 0, "total": len(row["to_transcribe"])})
-                    code = c.split(" ")[0]
-                    r = subprocess.run([str(lp[0]), str(lp[1]), "--course", code, "--all", "--yes"],
-                                       cwd=str(lp[1].parent), capture_output=True, text=True, encoding="utf-8",
-                                       errors="replace")
-                    if r.returncode != 0:
-                        report["errors"].append(f"{c}: lecture pipeline exited {r.returncode}: "
-                                                f"{(r.stderr or r.stdout).strip()[-300:]}")
-                    report["transcribed"].append(c)
-                    row = {x["course"]: x for x in knowledge_sync.inventory(cfg)["courses"]}[c]
-            # stages 2-4 — one proposal per new file
-            files = _files(row)
-            domain = learn.default_domain(cfg, cfg.material / c)
-            for k, rel in enumerate(files):
-                if stop and stop():
-                    report["stopped"] = True
-                    return report
-                say({"course": c, "stage": "structure", "file": rel, "done": k, "total": len(files)})
-
-                def sub(stage, done, total, _k=k, _rel=rel):
-                    say({"course": c, "stage": stage, "file": _rel, "done": _k, "total": len(files),
-                         "step": done, "steps": total})
-                try:
-                    p = ingest.ingest(cfg, store, llm, embedder, cfg.material / rel, domain, sub, course=c)
-                    report["proposals"].append(p["id"])
-                except Exception as e:  # noqa: BLE001  one bad file does not stop the run
-                    report["errors"].append(f"{rel}: {type(e).__name__}: {e}")
-            report["courses"].append(c)
-        return report
+        return _run(cfg, store, llm, embedder, courses, transcribe, say, stop, set(rebuild), report)
+    except Exception as e:  # noqa: BLE001
+        report["errors"].append(f"run: {type(e).__name__}: {e}")
+        raise
     finally:
         release(cfg)
+        report["ended"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            f = cfg.shared_dir / "sync" / "last_run.json"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _run(cfg, store, llm, embedder, courses, transcribe, say, stop, rebuild, report):
+    inv = {r["course"]: r for r in knowledge_sync.inventory(cfg)["courses"]}
+    lp = lecture_pipeline(cfg)
+    for c in courses:
+        row = inv.get(c)
+        if not row:
+            report["errors"].append(f"{c}: not a course folder")
+            continue
+        # stage 1 — offline transcription on this PC
+        if transcribe and row["to_transcribe"]:
+            if not lp:
+                report["errors"].append(f"{c}: {len(row['to_transcribe'])} lectures not transcribed "
+                                        "(the lecture pipeline is not set up on this PC)")
+            else:
+                say({"course": c, "stage": "transcribe", "done": 0, "total": len(row["to_transcribe"])})
+                code = c.split(" ")[0]
+                r = subprocess.run([str(lp[0]), str(lp[1]), "--course", code, "--all", "--yes"],
+                                   cwd=str(lp[1].parent), capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace")
+                if r.returncode != 0:
+                    report["errors"].append(f"{c}: lecture pipeline exited {r.returncode}: "
+                                            f"{(r.stderr or r.stdout).strip()[-300:]}")
+                report["transcribed"].append(c)
+                row = {x["course"]: x for x in knowledge_sync.inventory(cfg)["courses"]}[c]
+        if cfg.ingest_method == "v4":
+            if _course_v4(cfg, store, llm, embedder, c, row, say, stop, c in rebuild, report):
+                return report
+            continue
+        # stages 2-4 — one proposal per new file
+        files = _files(row)
+        domain = learn.default_domain(cfg, cfg.material / c)
+        for k, rel in enumerate(files):
+            if stop and stop():
+                report["stopped"] = True
+                return report
+            say({"course": c, "stage": "structure", "file": rel, "done": k, "total": len(files)})
+
+            def sub(stage, done, total, _k=k, _rel=rel):
+                say({"course": c, "stage": stage, "file": _rel, "done": _k, "total": len(files),
+                     "step": done, "steps": total})
+            try:
+                p = ingest.ingest(cfg, store, llm, embedder, cfg.material / rel, domain, sub, course=c)
+                report["proposals"].append(p["id"])
+            except Exception as e:  # noqa: BLE001  one bad file does not stop the run
+                report["errors"].append(f"{rel}: {type(e).__name__}: {e}")
+        report["courses"].append(c)
+    return report
+
+
+def _course_v4(cfg, store, llm, embedder, c, row, say, stop, rebuild, report):
+    """Stages 2-4 v4 for one course. -> True when the run was stopped."""
+    session = "sync_" + time.strftime("%Y-%m-%d_%H%M%S")
+    files = sorted(_files(row, rebuild), key=coursesync.lecture_key)
+    _, errors = coursesync.prepare_all(cfg, store, llm, c, files, session, say, stop, cfg.sync_workers)
+    for rel, e in errors.items():
+        if e != "stopped":
+            report["errors"].append(f"{rel}: {e}")
+    if stop and stop():
+        report["stopped"] = True
+        report["waiting"].append({"course": c, "reason": "stopped before every lecture was ready: run Sync again "
+                                  "to finish (finished lectures are kept)"})
+        return True
+    if errors:
+        report["waiting"].append({"course": c, "reason": f"{len(errors)} lectures failed; the course graph is built "
+                                  "once every lecture has its notes: run Sync again"})
+        return False
+    p = coursesync.build(cfg, store, llm, embedder, c, rebuild=rebuild, progress=say, session=session)
+    if p:
+        report["proposals"].append(p["id"])
+    report["courses"].append(c)
+    return False
 
 
 # ── after approval: retire re-derived atomic notes ──

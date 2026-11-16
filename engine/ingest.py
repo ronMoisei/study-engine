@@ -558,8 +558,9 @@ def resolve_identity(decided, new_order):
     return find
 
 
-def build_links(graph, decided, find, roots, items_by_slug, new_pos, topic_rank, index):
-    """Turn model relations into links stored in NEW notes, with vetoes and confidence. Fills items in place."""
+def build_links(graph, decided, find, roots, items_by_slug, new_pos, topic_rank, index, quotes=None):
+    """Turn model relations into links stored in NEW notes, with vetoes and confidence. Fills items in place.
+    quotes: {(from, to): [evidence]} — reasons the model gave with a verbatim quote of the notes (course graph)."""
     extra, links, seen = {}, [], set()
     for a, b, sim, rel in decided:
         if rel in ("none", "same"):
@@ -573,8 +574,9 @@ def build_links(graph, decided, find, roots, items_by_slug, new_pos, topic_rank,
             if (src, pred, dst) in seen or (dst, pred, src) in seen:
                 continue
             seen.add((src, pred, dst))
-            links.append({"from": src, "to": dst, "predicate": pred, "confidence": "model", "evidence": [],
-                          "conflict": [], "sim": sim})
+            ev = (quotes or {}).get((a, b), [])
+            links.append({"from": src, "to": dst, "predicate": pred, "confidence": "confident" if ev else "model",
+                          "evidence": list(ev), "conflict": [], "sim": sim})
             continue
         src, dst = (ra, rb) if rel == "A_requires_B" else (rb, ra)
         if (src, "requires", dst) in seen:
@@ -584,6 +586,7 @@ def build_links(graph, decided, find, roots, items_by_slug, new_pos, topic_rank,
         used = index.uses(src, dst)
         if used:
             e["evidence"].append(f"definition uses '{used[0]}'")
+        e["evidence"] += (quotes or {}).get((a, b), [])
         if graph.order_conflict(src, dst, new_pos):
             e["conflict"].append("the prerequisite appears later in the same course/file")
         elif _same_seq_earlier(graph, src, dst, new_pos):
@@ -654,7 +657,7 @@ def ingest(cfg, store, llm, embedder, path, domain, progress=None, course=None):
     course = course or learn.course_of(cfg, path) or ""
     session = "ingest_" + time.strftime("%Y-%m-%d_%H%M%S")
     domain = topics.slugify(domain)
-    v3 = cfg.ingest_method == "v3"
+    v3 = cfg.ingest_method in ("v3", "v4")              # v4 (Sync Knowledge) analyses a single file like v3
     cloud = hasattr(llm, "route") and llm.route("structure" if v3 else "extract")[0] == "agy"
     limit, max_claims = (cfg.passage_chars_cloud, 20) if cloud else (cfg.passage_chars, 8)
     passages, info = material.parse(path, limit, root=cfg.magistrale / "Material")
@@ -829,6 +832,11 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
     Links: [[from, predicate, to], ...]. `reject_edges` are left out. Conflict links (vetoed by order, topic or
     kind) are left out unless listed in `accept_edges`."""
     p = load(cfg, pid)
+    retired = []
+    if p.get("rebuild") and "retired" not in p:            # a course rebuild: move the previous notes aside first
+        from . import coursesync
+        retired = p["retired"] = coursesync.retire(cfg, p)
+        save(cfg, p)
     reject = set(reject or [])
     no_edge = {tuple(e) for e in (reject_edges or [])}
     yes_edge = {tuple(e) for e in (accept_edges or [])}
@@ -909,6 +917,10 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
         p["status"] = "done"
     p["held_conflicts"] = [h for k, h in held.items() if k not in yes_edge]
     summary["held_conflicts"] = len(p["held_conflicts"])
+    if p.get("rebuild"):
+        from . import coursesync
+        summary["retired"] = len(p.get("retired", []))
+        summary["dangling_links"] = [list(x) for x in coursesync.dangling(cfg, p.get("retired", []))]
     save(cfg, p)
     return summary
 

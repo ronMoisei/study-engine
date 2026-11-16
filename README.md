@@ -128,7 +128,7 @@ python study.py sync           # the same check by hand, with a report
 
 `config.json` next to `study.py` overrides the defaults in `engine/config.py` for **this PC** (unknown keys are an
 error). Settings that must be the same everywhere go in the synced `<workspace>/.study/settings.json`
-(allowed keys: `agy_project`, `teach_model`, `models`, `dry_run`):
+(allowed keys: `agy_project`, `teach_model`, `models`, `dry_run`, `ingest_method`, `sync_workers`, `job_timeout_s`):
 
 ```json
 {"agy_project": "<id of the Antigravity project for panel conversations>"}
@@ -151,11 +151,17 @@ icon in the app) is answered with "project not found", and the panel then falls 
 | `anki_url`, `note_type`, `front_field`, `back_field` | AnkiConnect, `Basilare`, `Fronte`, `Retro` | review loop |
 | `teach_model` | `flash` | model for a new conversation started from the panel |
 | `dry_run` | false | never rate or add cards in Anki |
+| `ingest_method` | `v4` | Sync Knowledge pipeline: `v4` notes first, graph last; `v3` per file |
+| `sync_workers` | 3 | lectures polished and atomized in parallel during a Sync |
+| `job_timeout_s` | polish 900, atomize 420, consolidate 600, link 600 | per-job agy timeout (others: `agy_timeout_s`, 180) |
 
 Model assignment (measured choices):
 
 | Job | Default | Why |
 |---|---|---|
+| polish | `agy:gemini-4-hydrogen-high` | raw lecture → full notes; high thinking keeps derivations and reasons intact |
+| atomize | `agy:gemini-4-hydrogen-medium` | full notes → atomic drafts, every statement quoted |
+| consolidate, link | `agy:gemini-4-argon-medium` | the course graph: chapters and duplicates once per course, links per lecture from the full notes |
 | extract | `agy:gemini-3.8-flash-low` | local models split procedures into fragments; cached, paid once per file |
 | group | `agy:gemini-3.8-flash-low` | claims → concepts + topics, one call per file, cached |
 | relate | `agy:gemini-3.8-flash-low` | identity + prerequisite direction, 60 pairs per call; the local judge merged general concepts into specific ones |
@@ -164,13 +170,15 @@ Model assignment (measured choices):
 
 ## The Study panel
 
-Three tabs, plain JavaScript (`sidecar_ui/`), math rendered by vendored KaTeX 0.16.11.
+Four tabs (All Knowledge, Course, Inbox, Review), plain JavaScript (`sidecar_ui/`), math rendered by vendored KaTeX 0.16.11.
 
 **Graph**
 - *A course*: the course's atomic notes plus every approved concept learned in that course — from its material or
   from a teaching session about it (the note's `course` field, or the course folder its source lies in). A course
-  without atomic notes gets its graph as soon as it has one concept. The prerequisite DAG is laid out deterministically (`engine/layout.py`: level = longest path
-  from a foundation, barycenter sweeps against crossings, foundations at the bottom), coloured by learner status.
+  without atomic notes gets its graph as soon as it has one concept. One block per topic (chapter), each a
+  prerequisite DAG laid out deterministically (`engine/layout.py`: level = longest path from a foundation,
+  barycenter sweeps against crossings, foundations at the bottom, at most 8 concepts side by side — a wider level
+  wraps), coloured by learner status.
 - *All knowledge, by concept*: concept clusters as macro-nodes (`engine/clusters.py` — start from each note's topic,
   fold small topics into the cluster they share most links with). Arrows point from prerequisite to what builds on
   it; a concept with several premises gets a junction (*A ∧ B ⟹ C*).
@@ -219,19 +227,30 @@ Flags everywhere: `--stub` (offline stand-in models) · `--dry-run` (never rate 
 ## Sync Knowledge (All Knowledge tab)
 
 Course by course, the panel shows what is new, estimates the cloud calls, runs, and resumes where it stopped
-(`engine/knowledge_sync.py`, `engine/syncrun.py`):
+(`engine/knowledge_sync.py`, `engine/syncrun.py`, `engine/coursesync.py`). The notes are written first and the graph
+last: an atomic note says what a concept *is*, but which idea depends on which ("we need A to define B", "from A
+and B it follows that C") lives in the reasoning of the lecture, so the graph is read from the full notes.
 
 | Stage | Model (config `models`) | Does | Checked by code |
 |---|---|---|---|
 | 1 offline | none, this PC's GPU | lectures without raw notes → `01_Study/Notes/Raw Notes/<lecture>/` (the local lecture pipeline; set its folder and Python in `%LOCALAPPDATA%/study-engine/pc.json`) | the pipeline's checkpoints |
-| 2 structure | `structure`: Gemini 4 Argon | reads a whole raw note (or, for a course without recordings, a slide deck) → the concepts it teaches, each anchored by a verbatim quote, with topics and named prerequisites | quote must be in the source |
-| 3 atomic concepts | `write`: Gemini 4 Hydrogen | each concept → definition + up to 6 propositions, every one quoted | unquoted definitions and propositions dropped |
-| 4 organize | `relate`: Gemini 4 Argon | embedding neighbours across **all** courses + the prerequisites Argon named → same / requires / contrasts / analogue | vetoes (loops, lecture and topic order), shortcuts removed |
+| 2 full notes | `polish`: Gemini 4 Hydrogen high | each raw note (or, for a course without recordings, slide deck) → `01_Study/Notes/Full Notes/<lecture>/<lecture>_Full_Notes.md`: clean notes that keep every derivation and every "why", ~30k characters per call | never overwrites a full note it did not write (`generated_by: study-engine`) |
+| 3 atomic concepts | `atomize`: Gemini 4 Hydrogen medium | each full note → atomic concept drafts (definition + up to 6 propositions), no links yet | every definition and proposition needs a verbatim quote of the full note |
+| 4 course graph | `consolidate`, `link`: Gemini 4 Argon | only once **every** lecture of the run has its drafts: one call organises the course (chapters in teaching order, duplicates across lectures, drafts that are not knowledge, drafts that repeat a note of another course); then one call per lecture reads its **full note** and the course catalogue → requires / contrasts / analogue links, each with the reason and a quote | links quoted from the notes are *confident*; vetoes (loops, a prerequisite taught in a later lecture), shortcuts removed |
 
-Each file becomes one Inbox proposal. **Approve all confident** writes every pending concept and every link except
-conflicts; conflicts are held in the proposal until you accept or ignore them. When every raw note of a course has an
-approved proposal, the course's old atomic notes (written by the earlier process-material pipeline) are retired from
-the graph (`.study/rederived.json`). One PC runs a Sync at a time (`.study/sync.lock`).
+Stages 2–3 run several lectures in parallel (`sync_workers`, default 3) and save each lecture as it finishes
+(`.study/sync/<course>.json`, synced by Drive), so a stopped or failed run continues where it was. The course gets
+**one** Inbox proposal. **Approve all confident** writes every pending concept and every link except conflicts;
+conflicts are held in the proposal until you accept or ignore them. The last run's report is in
+`.study/sync/last_run.json` and shown when the drawer opens. One PC runs a Sync at a time (`.study/sync.lock`).
+
+**Rebuild** (a column in the drawer): redo every lecture of a course that is already in the graph. Nothing is
+replaced until you approve: then the course's previous notes move to `.study/retired/<proposal>/` (kept, not
+deleted; notes captured in teaching sessions stay), its read-only atomic notes are hidden (`.study/rederived.json`),
+and the new notes are written — a concept that keeps its title keeps its id, so its learner history still applies.
+
+`ingest_method` in the settings picks the pipeline: `v4` (above, default), or `v3` (per file: Argon structure →
+Hydrogen writes → Argon relates, one proposal per file). Analysing a single file from the Inbox uses the per-file one.
 
 ## Material → concept graph (ingest)
 

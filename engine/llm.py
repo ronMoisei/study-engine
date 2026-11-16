@@ -7,6 +7,7 @@ StubProvider — deterministic offline stand-in (tests, development while the ag
 import json
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -97,7 +98,8 @@ class AgyProvider:
 
     def run(self, job, prompt, schema, session="", retries=1, model=None):
         model = model or self.cfg.models[job]
-        schema_file = self.cfg.agy_workdir / f"schema_{job}.json"
+        schema_file = self.cfg.agy_workdir / f"schema_{job}_{threading.get_ident()}.json"   # parallel calls
+        timeout = int(self.cfg.job_timeout_s.get(job, self.cfg.agy_timeout_s))
         schema_file.write_text(json.dumps(schema), encoding="utf-8")
         last_err = None
         for attempt in range(retries + 1):
@@ -110,9 +112,9 @@ class AgyProvider:
                 proc = subprocess.run(
                     [self.cfg.agy, "-p", "", "--input-format", "stream-json", "--output-format", "stream-json",
                      "--model", model, "--json-schema", str(schema_file), "--disable-slash-commands",
-                     "--print-timeout", f"{self.cfg.agy_timeout_s}s"],
+                     "--print-timeout", f"{timeout}s"],
                     input=message, cwd=self.cfg.agy_workdir, capture_output=True, text=True, encoding="utf-8",
-                    timeout=self.cfg.agy_timeout_s + 30)
+                    timeout=timeout + 30)
                 raw = (proc.stdout or "") + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
                 if "RESOURCE_EXHAUSTED" in raw or "quota" in raw.lower() and proc.returncode:
                     raise LLMError("agy quota exhausted — retry later or set provider 'stub' in config.json")
@@ -222,6 +224,43 @@ class StubProvider:
                 notes.append({"n": c["n"], "definition": c["introduced_by"], "definition_quote": c["introduced_by"],
                               "aliases": [], "propositions": [{"text": x, "quote": x} for x in same[:6]]})
             out = {"notes": notes}
+        elif job == "polish":
+            out = {"markdown": data["text"]}
+        elif job == "atomize":
+            # one concept per passage: its first sentence of 4+ words is the definition and the quote
+            cs = []
+            for p in data["passages"]:
+                sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", p["text"])
+                         if len(x.split()) >= 4 and not x.strip().startswith("#")]
+                if sents:
+                    cs.append({"title": " ".join(sents[0].split()[:3]).strip(".,;:"), "kind": "definition",
+                               "definition": sents[0], "quote": sents[0], "aliases": [],
+                               "propositions": [{"text": x, "quote": x} for x in sents[1:3]]})
+            out = {"concepts": cs[:20]}
+        elif job == "consolidate":
+            first, dups = {}, []
+            for c in data["concepts"]:
+                k = c["title"].lower()
+                if k in first:
+                    dups.append({"keep": first[k], "same": [c["n"]]})
+                else:
+                    first[k] = c["n"]
+            out = {"topics": [{"slug": "general", "title": "General", "members": [c["n"] for c in data["concepts"]]}],
+                   "duplicates": dups, "existing": [], "discard": []}
+        elif job == "link":
+            # a concept of this lecture requires every catalog concept whose title's first word appears just before
+            # its own title in the notes; the quote is that span
+            low, links = data["notes"].lower(), []
+            titles = {c["id"]: c["title"] for c in data["catalog"]}
+            for a in data["this_lecture"]:
+                for b, tb in titles.items():
+                    if a != b and tb.lower() in low and titles[a].lower() in low and \
+                            low.index(tb.lower()) < low.index(titles[a].lower()):
+                        i = low.index(tb.lower())
+                        links.append({"from": a, "to": b, "relation": "requires", "because": "stub",
+                                      "quote": " ".join(data["notes"][i:].split()[:8])})
+                        break
+            out = {"links": links}
         elif job == "relate":
             rels = []
             for p in data["pairs"]:
@@ -330,7 +369,26 @@ class Router:
         if prov not in self._cache:
             self._cache[prov] = PROVIDERS[prov](self.cfg, self.store)
         out = self._cache[prov].run(job, prompt, schema, session=session, retries=retries, model=model)
-        return repair_latex(out)
+        return repair_latex(unwrap_double(out, schema))
+
+
+def unwrap_double(out, schema):
+    """A model sometimes answers a one-string schema with the whole JSON inside the string:
+    {"markdown": "{\\"markdown\\": \\"## ...\\"}"}. Return the inner object when it conforms to the schema."""
+    if not isinstance(out, dict) or len(out) != 1:
+        return out
+    (k, v), = out.items()
+    if not isinstance(v, str) or not v.lstrip().startswith("{") or f'"{k}"' not in v[:200]:
+        return out
+    text = v.strip()
+    for attempt in (text, re.sub(r'\\(?![\\"/bfnrtu])', r"\\\\", text)):   # LaTeX \alpha: not a JSON escape
+        try:
+            inner = json.loads(attempt, strict=False)
+        except ValueError:
+            continue
+        if isinstance(inner, dict) and not validate(inner, schema):
+            return inner
+    return out
 
 
 # A model that writes LaTeX with single backslashes inside JSON gets them read as escapes: "\times" arrives as
