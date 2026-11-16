@@ -101,12 +101,42 @@ pip install numpy pypdf
 ```
 
 The Antigravity app only loads side panels from plugins in the global `~/.gemini/config/plugins/` folder, so each PC
-gets a tiny launcher plugin `study` that starts `study.py serve --sidecar` from the synced copy. Restart the app
-(quit from the tray) after deploying. Don't use the panel on two PCs at the same moment.
+gets a tiny launcher plugin `study` that starts `study.py serve --sidecar` from the synced copy. Don't use the panel
+on two PCs at the same moment.
+
+### Keeping devices in sync
+
+Everything inside the workspace folder syncs through Google Drive by itself — material, `Graph/`, `Learner/`,
+proposals, shared settings, the agy skills and the deployed engine — and the panel re-reads those files on every
+request. What lives on each PC is checked and **repaired automatically every time the panel's engine starts**
+(`engine/devicesync.py`); the ✓ chip in the panel's tab bar shows the result (click to re-check):
+
+| Per PC | Rule |
+|---|---|
+| launcher plugin | rewritten if it doesn't start the synced engine with this PC's Python |
+| agy MCP `anki` | (re)registered if missing or pointing at a path that doesn't exist on this PC |
+| agy MCP `obsidian` | registered if missing, with the vault's Local REST API key (never printed) |
+| python packages | numpy, pypdf reported if missing |
+| running engine | a newer deploy from another PC is detected within ~20 s; the engine exits and the app restarts it on the new code; the panel reloads itself |
+| dev clone | `python study.py sync --pull` fast-forwards a git checkout from GitHub (only when the tree is clean) |
+
+```bash
+python study.py sync           # the same check by hand, with a report
+```
 
 ## Configuration
 
-`config.json` next to `study.py` overrides the defaults in `engine/config.py` (unknown keys are an error):
+`config.json` next to `study.py` overrides the defaults in `engine/config.py` for **this PC** (unknown keys are an
+error). Settings that must be the same everywhere go in the synced `<workspace>/.study/settings.json`
+(allowed keys: `agy_project`, `teach_model`, `models`, `dry_run`):
+
+```json
+{"agy_project": "<id of the Antigravity project for panel conversations>"}
+```
+
+`agy_project` makes every conversation the panel starts (Teach me this, Prepare lecture, Start learning) open in
+that project — for example an online project you can also reach from a tablet. The panel passes it the same way the
+app's own sidecar SDK does: as `ANTIGRAVITY_PROJECT_ID` for the `agentapi new-conversation` call.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -173,6 +203,7 @@ python study.py proposals | show <id>
 python study.py approve <id> [--accept 0,2] [--reject 3]
 python study.py plan <id>                      # study plan note: dependency order + defined-before-use check
 python study.py propose <concepts.json>        # concepts taught in a session -> one Inbox proposal per session
+python study.py sync [--pull]                  # check / repair this PC; --pull fast-forwards a git clone
 
 python study.py review [--deck D] [--limit N]  # terminal review
 python study.py decks

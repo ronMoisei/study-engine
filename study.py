@@ -14,6 +14,7 @@
   python study.py approve <id> [--accept 0,2] [--reject 3]   write items to Graph/ (default: all pending)
   python study.py plan <id>                  build the study plan note for a proposal
   python study.py propose <concepts.json>    concepts taught in an agy session -> proposal (no model call)
+  python study.py sync [--pull]              check/repair this PC (launcher, MCP servers, deps); --pull: git
 
 Flags valid everywhere: --stub (offline stand-in grader), --dry-run (never rate/add in Anki).
 """
@@ -105,19 +106,11 @@ def install_sidecar(cfg, study_py=None):
     """
     from pathlib import Path
 
+    from engine import devicesync
     from engine import sidecar as sc
     study_py = Path(study_py or config.REPO / "study.py")
-    root = Path.home() / ".gemini" / "config" / "plugins" / sc.PLUGIN_NAME
-    (root / "assets").mkdir(parents=True, exist_ok=True)
-    (root / "sidecars" / sc.SIDECAR_FOLDER).mkdir(parents=True, exist_ok=True)
-    (root / "plugin.json").write_text(json.dumps(sc.plugin_manifest(), indent=2), encoding="utf-8")
-    (root / "assets" / "logo.svg").write_text(sc.LOGO_SVG, encoding="utf-8")
-    m = sc.manifest(cfg, sys.executable, study_py)            # this PC's Python, the engine copy to run
-    (root / "sidecars" / sc.SIDECAR_FOLDER / "sidecar.json").write_text(json.dumps(m, indent=2, ensure_ascii=False),
-                                                                        encoding="utf-8")
-    (root / "README.md").write_text("# Study\n\nLauncher for the study engine side panel. Engine: "
-                                    f"{study_py}\nReinstall with `python study.py install-sidecar`.\n",
-                                    encoding="utf-8")
+    root = devicesync.install_launcher(cfg, study_py)        # this PC's Python, the engine copy to run
+    m = sc.manifest(cfg, sys.executable, study_py)
     old = Path.home() / ".gemini" / "config" / "sidecars" / "study-engine"     # earlier standalone location
     if (old / "sidecar.json").is_file():
         (old / "sidecar.json").unlink()
@@ -273,6 +266,16 @@ def ingest_cli(cfg, a):
         sys.exit(f"{a.cmd}: {e}")
 
 
+def sync_cli(cfg, pull):
+    """Check this PC against the synced workspace and repair what lives per PC (see engine/devicesync.py)."""
+    from engine import devicesync
+    r = devicesync.check(cfg, fix=True, pull=pull)
+    for i in r["items"]:
+        mark = "fixed" if i.get("fixed") else ("ok" if i["ok"] else "!!")
+        print(f"  [{mark:5}] {i['item']:15} {i['detail']}")
+    print("this PC is in sync" if r["ok"] else "some items need attention (see !!)")
+
+
 def propose_cli(cfg, path):
     """Concepts taught in a session (JSON file) -> an Inbox proposal. Exit 2 on invalid input (nothing saved)."""
     from pathlib import Path
@@ -298,7 +301,7 @@ def propose_cli(cfg, path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "install-sidecar", "deploy", "calls",
-                                    "ingest", "proposals", "show", "approve", "plan", "propose"])
+                                    "ingest", "proposals", "show", "approve", "plan", "propose", "sync"])
     ap.add_argument("target", nargs="?", help="file for ingest; proposal id for show/approve/plan")
     ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp")
     ap.add_argument("--accept", help="comma-separated item numbers")
@@ -309,6 +312,7 @@ def main():
     ap.add_argument("--stub", action="store_true", help="offline deterministic stand-in grader")
     ap.add_argument("--dry-run", action="store_true", help="never rate or add cards in Anki")
     ap.add_argument("--sidecar", action="store_true", help="serve: run as an Antigravity sidecar (port/token from env)")
+    ap.add_argument("--pull", action="store_true", help="sync: also fast-forward this git clone from GitHub")
     a = ap.parse_args()
 
     cfg = config.load()
@@ -327,6 +331,8 @@ def main():
         return show_calls(cfg, a.last)
     if a.cmd == "propose":
         return propose_cli(cfg, a.target)
+    if a.cmd == "sync":
+        return sync_cli(cfg, a.pull)
     if a.cmd in ("ingest", "proposals", "show", "approve", "plan"):
         return ingest_cli(cfg, a)
     engine = Engine(cfg)

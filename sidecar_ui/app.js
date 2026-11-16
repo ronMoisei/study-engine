@@ -24,12 +24,40 @@ window.addEventListener("message", (ev) => {
 async function api(method, path, body) {
   const headers = { "Content-Type": "application/json" };
   if (TOKEN) headers["X-Sidecar-Token"] = TOKEN;
-  const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let r;
+  try { r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined }); }
+  catch (e) { engineDown(); throw new Error("engine restarting — the panel reloads when it is back"); }
   let data = {};
   try { data = await r.json(); } catch (e) { data = { error: `HTTP ${r.status}` }; }
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
 }
+
+/** The engine went away (usually: it restarts onto a newer deploy from another PC). Reload once it answers. */
+let downPoll = null;
+function engineDown() {
+  if (downPoll) return;
+  setStatus("engine restarting…");
+  const headers = TOKEN ? { "X-Sidecar-Token": TOKEN } : {};
+  downPoll = setInterval(async () => {
+    try { if ((await fetch("/health", { headers })).ok) { clearInterval(downPoll); location.reload(); } } catch (e) { /* still down */ }
+  }, 3000);
+}
+
+/** Tab-bar chip: is this PC in step with the synced workspace? Click to re-check (and repair). */
+async function syncChip(recheck) {
+  const b = document.getElementById("syncchip");
+  if (!b) return;
+  try {
+    const r = await api("GET", "/sync" + (recheck ? "?recheck=1" : ""));
+    const bad = r.items.filter((i) => !i.ok), fixed = r.items.filter((i) => i.fixed);
+    b.textContent = r.ok ? (fixed.length ? `✓ synced (${fixed.length} fixed)` : "✓ synced") : `⚠ ${bad.length} to fix`;
+    b.className = "syncchip " + (r.ok ? "ok" : "warn");
+    b.title = r.items.map((i) => `${i.fixed ? "fixed" : i.ok ? "ok" : "!!"}  ${i.item}: ${i.detail}`).join("\n") + "\n\nclick to re-check";
+  } catch (e) { b.textContent = "sync ?"; b.title = e.message; }
+}
+document.getElementById("syncchip")?.addEventListener("click", () => syncChip(true));
+setTimeout(() => syncChip(false), 2500);      // the engine checks this PC in the background when it starts
 
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -97,19 +125,25 @@ function levelPicker(onchange) {
 const goalBox = (placeholder) => el("textarea", { class: "goal", rows: 2, placeholder });
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== "")).toString();
 
-/** Send / show / copy buttons for a message the engine builds (GET msgPath, POST sendPath). */
-function messageActions(getParams, msgPath, sendPath, ready) {
+/** Send / show / copy buttons for a message the engine builds (GET msgPath, POST sendPath).
+ *  The main button always starts a NEW session (in the project set in .study/settings.json); sending into the
+ *  conversation the panel sits next to is a separate, explicit button. */
+function messageActions(getParams, msgPath, sendPath, ready, label) {
   const msgBox = el("div", { class: "msgbox", style: "display:none" });
   const out = el("div", { class: "muted" });
   const fetchMsg = async () => (await api("GET", `${msgPath}?${qs(getParams())}`)).message;
-  const send = el("button", { class: "primary", disabled: true, onclick: async () => {
-    send.disabled = true;
+  const go = async (button, intoThisChat) => {
+    button.disabled = true;
     try {
-      const r = await api("POST", sendPath, { ...getParams(), conversationId: CONVERSATION });
-      out.textContent = r.sent_to ? "Sent to this conversation." : "Started a new conversation.";
+      const r = await api("POST", sendPath, { ...getParams(), conversationId: intoThisChat ? CONVERSATION : null });
+      out.textContent = r.sent_to ? "Sent to this conversation." : `Started a new session${r.project && r.project !== "panel's project" ? " in your project" : ""}.`;
     } catch (e) { out.textContent = e.message + " — use 'Show message' and paste it into a conversation."; }
-    send.disabled = !ready();
-  } }, CONVERSATION ? "Start in this conversation" : "Start (new conversation)");
+    button.disabled = !ready();
+  };
+  const primary = el("button", { class: "primary", disabled: true, title: "start a new session", onclick: () => go(primary, false) }, label || "Start");
+  const here = CONVERSATION ? el("button", { disabled: true, title: "send it into the conversation this panel is next to",
+    onclick: () => go(here, true) }, "Send to this chat") : null;
+  const send = el("span", { class: "sendgroup" }, primary, here);
   const show = el("button", { onclick: async () => {
     if (msgBox.style.display !== "none") { msgBox.style.display = "none"; return; }
     try { msgBox.textContent = await fetchMsg(); msgBox.style.display = "block"; } catch (e) { out.textContent = e.message; }
@@ -119,7 +153,7 @@ function messageActions(getParams, msgPath, sendPath, ready) {
     try { m = await fetchMsg(); } catch (e) { out.textContent = e.message; return; }
     try { await navigator.clipboard.writeText(m); out.textContent = "Copied."; } catch (e) { msgBox.textContent = m; msgBox.style.display = "block"; out.textContent = "Clipboard blocked: select the text below."; }
   } }, "Copy");
-  return { send, show, copy, out, msgBox, refresh: () => { send.disabled = !ready(); } };
+  return { send, show, copy, out, msgBox, refresh: () => { primary.disabled = !ready(); if (here) here.disabled = !ready(); } };
 }
 function setStatus(t) { document.getElementById("status").textContent = t || ""; }
 function view() { const v = document.getElementById("view"); v.replaceChildren(); return v; }
@@ -348,8 +382,8 @@ const Graph = {
     const goal = goalBox("Goal / scope (optional): e.g. theory only, no code");
     let acts;
     const picker = levelPicker(() => acts.refresh());
-    acts = messageActions(() => ({ id, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value);
-    acts.send.textContent = CONVERSATION ? "Teach me this" : "Teach me this (new conversation)";
+    acts = messageActions(() => ({ id, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value,
+      "Teach me this");
     dr.replaceChildren(
       el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
       el("h3", {}, n.name),
@@ -392,8 +426,7 @@ const Inbox = {
     let acts;
     const picker = levelPicker(() => acts.refresh());
     acts = messageActions(() => ({ target: target.value.trim(), level: picker.value, goal: goal.value.trim() }),
-      "/learn-message", "/learn", () => !!picker.value && !!(target.value.trim() || goal.value.trim()));
-    acts.send.textContent = CONVERSATION ? "Start learning" : "Start learning (new conversation)";
+      "/learn-message", "/learn", () => !!picker.value && !!(target.value.trim() || goal.value.trim()), "Start learning");
     target.addEventListener("input", acts.refresh);
     goal.addEventListener("input", acts.refresh);
     v.append(target, courseList, goal, picker.el, el("div", { class: "row" }, acts.send, acts.show, acts.copy), acts.out, acts.msgBox);

@@ -71,8 +71,23 @@ def send_message(conversation_id, message, title=None):
     return agentapi(args)
 
 
-def new_conversation(message, model="flash", project_id=None):
-    return agentapi(["new-conversation", "--model", model, message], project_id=project_id)
+def new_conversation(message, model="flash", project_id=None, title=None):
+    """project_id: the Antigravity project to create it in (the app's own sidecar SDK does the same: it sets
+    ANTIGRAVITY_PROJECT_ID for the agentapi call). None = the sidecar's project."""
+    args = ["new-conversation", "--model", model] + (["--title", title] if title else []) + [message]
+    return agentapi(args, project_id=project_id)
+
+
+def title_of(message):
+    """'Topic: **Word embeddings** …' -> 'Study · Word embeddings' (conversation title in the app)."""
+    import re
+    for line in message.splitlines():
+        if line.startswith("Topic:"):
+            t = re.sub(r"[*`]", "", line[len("Topic:"):]).strip()
+            t = t.split(" (", 1)[0]                              # drop "(graph node …)", "(22 concepts …)"
+            t = re.sub(r"^the (concept cluster|course|folder|file)\s+", "", t).rstrip(". ")
+            return ("Study · " + t)[:80]
+    return "Study session"
 
 
 def manifest(cfg, python_exe, study_py):

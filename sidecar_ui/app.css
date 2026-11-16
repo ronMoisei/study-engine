@@ -43,6 +43,10 @@ h4 { margin: 14px 0 4px; font-size: 13px; }
 #tabs button { border: none; background: none; padding: 4px 10px; border-radius: 6px; }
 #tabs button.active { background: var(--s-card-bg); color: var(--s-fg); font-weight: 600; }
 #tabs #status { margin-left: auto; }
+.sendgroup { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+#tabs .syncchip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--s-line); background: none; }
+#tabs .syncchip.ok { color: var(--st-held); border-color: color-mix(in srgb, var(--st-held) 50%, transparent); }
+#tabs .syncchip.warn { color: var(--s-warn); border-color: var(--s-warn); }
 #view { padding: 8px 10px 60px; }
 
 /* graph */

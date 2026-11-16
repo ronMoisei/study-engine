@@ -517,8 +517,8 @@ const Knowledge = {
     const goal = goalBox("Goal / scope (optional): e.g. theory only, exam on 12 June");
     let acts;
     const picker = levelPicker(() => acts.refresh());
-    acts = messageActions(() => ({ cluster: cid, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value);
-    acts.send.textContent = CONVERSATION ? "Prepare lecture" : "Prepare lecture (new conversation)";
+    acts = messageActions(() => ({ cluster: cid, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value,
+      "Prepare lecture");
     const link = (x) => el("a", { onclick: () => { this.reveal(G, x.id); G.select(x.id); } }, x.name);
     dr.replaceChildren(
       el("button", { class: "close", onclick: () => dr.remove() }, "✕"),

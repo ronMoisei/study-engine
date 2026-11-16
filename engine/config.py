@@ -44,6 +44,9 @@ class Config:
     back_field: str = "Retro"
     dry_run: bool = False                       # True: never rate/add in Anki (testing)
     teach_model: str = "flash"                  # model for a NEW conversation started by "Teach me this"
+    # Antigravity project for conversations the panel starts (e.g. the online "Magistrale" project, reachable from
+    # other devices). "" = the panel's own project. Usually set once in <workspace>/.study/settings.json.
+    agy_project: str = ""
     db_file: str = ""                           # override engine DB location (tests); "" = default below
 
     @property
@@ -101,23 +104,33 @@ def _workspace_above(start: Path):
     return None
 
 
+# Settings that must be the same on every PC live in the synced workspace, not in a per-PC config.json.
+SHARED_KEYS = {"agy_project", "teach_model", "models", "dry_run"}
+
+
+def _apply(cfg, data, source, allowed=None):
+    for k, v in data.items():
+        if not hasattr(cfg, k) or (allowed is not None and k not in allowed):
+            raise ValueError(f"{source}: unknown or not allowed key '{k}'")
+        cur = getattr(cfg, k)
+        if isinstance(cur, Path):
+            v = Path(v)
+        elif isinstance(cur, dict):
+            v = {**cur, **v}
+        elif isinstance(cur, float):
+            v = float(v)
+        setattr(cfg, k, v)
+
+
 def load(path: Path | None = None) -> Config:
     cfg = Config()
     found = _workspace_above(REPO)
     if found:                                               # deployed copy: works on any PC, whatever the Drive path
         cfg.magistrale = found
     path = path or REPO / "config.json"
-    if path.is_file():
-        data = json.loads(path.read_text(encoding="utf-8"))
-        for k, v in data.items():
-            if not hasattr(cfg, k):
-                raise ValueError(f"config.json: unknown key '{k}'")
-            cur = getattr(cfg, k)
-            if isinstance(cur, Path):
-                v = Path(v)
-            elif isinstance(cur, dict):
-                v = {**cur, **v}
-            elif isinstance(cur, float):
-                v = float(v)
-            setattr(cfg, k, v)
+    if path.is_file():                                      # this PC only (not deployed, not synced)
+        _apply(cfg, json.loads(path.read_text(encoding="utf-8")), "config.json")
+    shared = cfg.shared_dir / "settings.json"               # every PC (synced with the workspace)
+    if shared.is_file():
+        _apply(cfg, json.loads(shared.read_text(encoding="utf-8")), str(shared), SHARED_KEYS)
     return cfg

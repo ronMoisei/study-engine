@@ -10,6 +10,7 @@ GET  /review/<sid>/summary
 POST /ingest {path, domain}                   -> job (background)      GET /jobs/<id>  -> progress
                                                  path: file, folder or course; domain defaults to the course
 GET  /courses                                 course folders in Material/
+GET  /sync[?recheck=1]                        this PC's setup (launcher, MCP servers, deps, deploy); recheck repairs
 GET  /proposals                               GET /proposals/<id>
 POST /proposals/<id>/apply {accept, reject}   write approved items to the vault
 POST /proposals/<id>/plan                     build the study plan note
@@ -62,6 +63,7 @@ class Engine:
         self.jobs = {}
         self.lock = threading.Lock()
         self.ingest_lock = threading.Lock()
+        self.sync_report = None               # devicesync.check() result for this PC
 
     def health(self):
         try:
@@ -209,10 +211,18 @@ def make_handler(engine, token=None):
                     if b.get("conversationId"):
                         out = sidecar.send_message(b["conversationId"], msg)
                         return self._send(200, {"sent_to": b["conversationId"], "result": out, "message": msg})
-                    out = sidecar.new_conversation(msg, model=engine.cfg.teach_model)
-                    return self._send(200, {"new_conversation": True, "result": out, "message": msg})
+                    out = sidecar.new_conversation(msg, model=engine.cfg.teach_model,
+                                                   project_id=engine.cfg.agy_project or None,
+                                                   title=sidecar.title_of(msg))
+                    return self._send(200, {"new_conversation": True, "result": out, "message": msg,
+                                            "project": engine.cfg.agy_project or "panel's project"})
                 if method == "GET" and path == "/health":
                     return self._send(200, engine.health())
+                if method == "GET" and path == "/sync":
+                    if q("recheck") or engine.sync_report is None:
+                        from . import devicesync
+                        engine.sync_report = devicesync.check(engine.cfg, fix=bool(q("recheck")))
+                    return self._send(200, engine.sync_report)
                 if method == "GET" and path == "/decks":
                     return self._send(200, {"decks": engine.anki.decks()})
                 if method == "POST" and path == "/review/start":
@@ -286,8 +296,47 @@ def make_handler(engine, token=None):
     return H
 
 
+RESTART_EXIT = 3          # the launcher's restart_policy "on-failure" restarts the engine on a non-zero exit
+
+
+def _start_device_sync(engine, as_sidecar):
+    """Every start: check (and repair) this PC's setup in the background; when running as the panel from the
+    deployed copy, watch for a newer deploy made on another PC and restart onto it."""
+    import os
+    import time
+
+    from . import devicesync
+
+    def run_check():
+        try:
+            engine.sync_report = devicesync.check(engine.cfg, fix=True)
+        except Exception as e:  # noqa: BLE001
+            engine.sync_report = {"ok": False, "items": [{"item": "sync check", "ok": False, "detail": str(e)}]}
+        for i in engine.sync_report["items"]:
+            if i.get("fixed") or not i["ok"]:
+                print(f"[sync] {i['item']}: {i['detail']}", flush=True)
+
+    threading.Thread(target=run_check, daemon=True).start()
+    from . import config as config_mod
+    if not (as_sidecar and config_mod._workspace_above(config_mod.REPO)):
+        return
+    first = devicesync.deploy_stamp(engine.cfg)
+
+    def watch():
+        while True:
+            time.sleep(20)
+            now = devicesync.deploy_stamp(engine.cfg)
+            if now and first and now != first:
+                print(f"[sync] new engine deployed ({now}); restarting onto it", flush=True)
+                time.sleep(2)                       # let Drive finish writing the copy
+                os._exit(RESTART_EXIT)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def serve(cfg, engine=None, as_sidecar=False):
     engine = engine or Engine(cfg)
+    _start_device_sync(engine, as_sidecar)
     token, port = None, cfg.port
     if as_sidecar:
         e = sidecar.env()
