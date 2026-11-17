@@ -249,6 +249,16 @@ replaced until you approve: then the course's previous notes move to `.study/ret
 deleted; notes captured in teaching sessions stay), its read-only atomic notes are hidden (`.study/rederived.json`),
 and the new notes are written — a concept that keeps its title keeps its id, so its learner history still applies.
 
+**Create raw notes** (top of the drawer): stage 1 on its own, for **all courses** or **one course**, offered only
+when there are new recordings (video or audio) without raw notes (`engine/rawnotes.py`). It first makes a cleaned-up
+`<stem>_enhanced.mp3` for recordings that have none (the pipeline's `enhance_all.py`; Whisper then uses it), starts
+Ollama if it is not running (slide and handwriting reading), then runs `ingest.py --all-courses [--course CODE]`.
+The drawer shows lecture k/N, the phase and the current step, read from the pipeline's output. After each lecture
+`narrate` (Gemini 4 Hydrogen low, one short call) turns that lecture's log into one to three sentences: numbers,
+and anything unusual (no slide matched, no speech, a failed lecture); if the call fails, the parsed numbers are shown
+instead. **Stop** kills the pipeline; the lecture in progress resumes from its checkpoint next time. Full log:
+`%LOCALAPPDATA%/study-engine/raw_notes/`.
+
 `ingest_method` in the settings picks the pipeline: `v4` (above, default), or `v3` (per file: Argon structure →
 Hydrogen writes → Argon relates, one proposal per file). Analysing a single file from the Inbox uses the per-file one.
 

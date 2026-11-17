@@ -37,6 +37,7 @@ class Config:
         "atomize": "agy:gemini-4-hydrogen-medium",    # full notes -> atomic concept drafts
         "consolidate": "agy:gemini-4-argon-medium",   # a course's drafts -> chapters, duplicates (once per course)
         "link": "agy:gemini-4-argon-medium",          # one lecture's full notes -> prerequisite links with reasons
+        "narrate": "agy:gemini-4-hydrogen-low",       # Create raw notes: one short progress update per lecture
     })
     # "v4": polish -> atomize -> course graph (Sync Knowledge); "v3": structure -> write -> organize per file;
     # "v2": extract -> group -> relate. Analysing a single file in the Inbox always uses the per-file pipeline.

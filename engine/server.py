@@ -10,6 +10,10 @@ GET  /review/<sid>/summary
 POST /ingest {path, domain}                   -> job (background)      GET /jobs/<id>  -> progress
                                                  path: file, folder or course; domain defaults to the course
 GET  /courses                                 course folders in Material/
+POST /knowledge/raw-notes {course?}          Create raw notes: offline lecture pipeline on this PC (background);
+                                                 no course = every course
+GET  /knowledge/raw-notes[?preview=1]         that run's progress and updates (+ what a run would do)
+POST /knowledge/raw-notes/stop
 GET  /sync[?recheck=1]                        this PC's setup (launcher, MCP servers, deps, deploy); recheck repairs
 GET  /proposals                               GET /proposals/<id>
 POST /proposals/<id>/apply {accept, reject}   write approved items to the vault
@@ -64,6 +68,25 @@ class Engine:
         self.lock = threading.Lock()
         self.ingest_lock = threading.Lock()
         self.sync_report = None               # devicesync.check() result for this PC
+        self.raw_run = None                   # rawnotes.RawNotesRun: "Create raw notes" (the last one, kept for the panel)
+
+    def start_raw_notes(self, course=None):
+        """The offline lecture pipeline on this PC (every course, or one course folder), in the background;
+        poll GET /knowledge/raw-notes."""
+        from . import rawnotes, syncrun
+        if self.raw_run and self.raw_run.state["state"] == "running":
+            return self.raw_run.view()
+        if not syncrun.lecture_pipeline(self.cfg):
+            raise MaterialError("the lecture pipeline is not set up on this PC (pc.json: lecture_pipeline, "
+                                "lecture_python)")
+        if course and not (self.cfg.material / course).is_dir():
+            raise MaterialError(f"not a course folder: {course}")
+        run = rawnotes.RawNotesRun(self.cfg, self.llm, course or None)
+        if not run.left():                                  # only new recordings (video or audio) are worth a run
+            raise MaterialError(f"no new lectures in {course or 'any course'}: every recording has raw notes")
+        self.raw_run = run
+        threading.Thread(target=self.raw_run.run, daemon=True).start()
+        return self.raw_run.view()
 
     def health(self):
         try:
@@ -254,6 +277,16 @@ def make_handler(engine, token=None):
                     b = self._body()
                     return self._send(200, engine.start_sync(b.get("courses") or [], bool(b.get("transcribe", True)),
                                                                 b.get("rebuild") or []))
+                if method == "GET" and path == "/knowledge/raw-notes":
+                    from . import rawnotes
+                    return self._send(200, {"preview": rawnotes.preview(engine.cfg) if q("preview") else None,
+                                            "run": engine.raw_run.view() if engine.raw_run else None})
+                if method == "POST" and path == "/knowledge/raw-notes":
+                    return self._send(200, {"run": engine.start_raw_notes(self._body().get("course"))})
+                if method == "POST" and path == "/knowledge/raw-notes/stop":
+                    if engine.raw_run:
+                        engine.raw_run.stop()
+                    return self._send(200, {"stopping": bool(engine.raw_run)})
                 if method == "GET" and path == "/knowledge/last-run":
                     f = engine.cfg.shared_dir / "sync" / "last_run.json"
                     return self._send(200, json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {})

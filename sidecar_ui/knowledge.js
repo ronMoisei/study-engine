@@ -57,6 +57,7 @@ const KnowledgeSync = {
         el("span", { class: "pill" }, count(t.raw_new, "raw notes not in the graph")),
         el("span", { class: "pill" }, count(t.slides_new, "slide decks not in the graph")),
         t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : ""),
+      this.rawBox(r.courses),
       el("table", { class: "inv" },
         el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts", "Rebuild"].map((h) => el("th", {}, h))),
         ...rows.map((c) => el("tr", {},
@@ -80,6 +81,81 @@ const KnowledgeSync = {
         last.errors.length ? `, ${last.errors.length} errors` : "", last.stopped ? " (stopped)" : "",
         ...(last.waiting || []).map((w) => el("div", { class: "warn" }, `${w.course}: ${w.reason}`))));
     } catch (e) { /* no report yet */ }
+  },
+
+  /** "Create raw notes": stage 1 alone — the offline pipeline on this PC (audio clean-up, Whisper, slides,
+   *  handwriting), with a short update from Hydrogen (low) after each lecture. */
+  rawBox(courses) {
+    clearInterval(this.rawPoll);
+    const box = el("div", { class: "rawbox" });
+    // only courses with new recordings (video or audio) that have no raw notes yet
+    const fresh = courses.filter((c) => c.to_transcribe.length);
+    const todo = fresh.reduce((s, c) => s + c.to_transcribe.length, 0);
+    const scope = el("select", { class: "rawscope", disabled: !todo },
+      el("option", { value: "" }, `All courses (${todo} new lecture${todo === 1 ? "" : "s"})`),
+      ...fresh.map((c) => el("option", { value: c.course }, `${c.course} (${c.to_transcribe.length} new)`)));
+    const info = el("div", { class: "muted" }, todo
+      ? "Audio clean-up, Whisper, slides and handwriting on this PC (free, uses the GPU, about 10 min per lecture). Hydrogen (low) reports after each lecture."
+      : "No new lectures: every recording has raw notes.");
+    const btn = el("button", { class: "primary", disabled: !todo, onclick: async () => {
+      btn.disabled = true;
+      try { this.rawShow(box, (await api("POST", "/knowledge/raw-notes", { course: scope.value || null })).run); this.rawWatch(box); }
+      catch (e) { info.textContent = e.message; btn.disabled = false; }
+    } }, "Create raw notes");
+    box.append(el("div", { class: "row" }, btn, scope), info, el("div", { class: "rawstatus" }), el("ul", { class: "rawupdates" }));
+    api("GET", "/knowledge/raw-notes").then((r) => {        // a run in progress (or the last one): show it
+      if (!r.run) return;
+      this.rawShow(box, r.run);
+      if (r.run.state === "running") this.rawWatch(box);
+    }).catch(() => {});
+    return box;
+  },
+
+  rawWatch(box) {
+    clearInterval(this.rawPoll);
+    this.rawPoll = setInterval(async () => {
+      if (!box.isConnected) return clearInterval(this.rawPoll);
+      let r;
+      try { r = await api("GET", "/knowledge/raw-notes"); } catch (e) { return; }
+      if (!r.run) return;
+      this.rawShow(box, r.run);
+      if (r.run.state !== "running") clearInterval(this.rawPoll);
+    }, 2000);
+  },
+
+  rawShow(box, run) {
+    const status = box.querySelector(".rawstatus"), list = box.querySelector(".rawupdates");
+    const btn = box.querySelector("button.primary"), scope = box.querySelector(".rawscope");
+    const running = run.state === "running";
+    if (btn) { if (running) btn.disabled = true; btn.style.display = running ? "none" : ""; }
+    if (scope) scope.style.display = running ? "none" : "";
+    const about = box.querySelector(":scope > .muted");
+    if (about) about.style.display = running ? "none" : "";
+    const one = run.scope && run.scope !== "all courses";
+    const phase = run.phase === "audio" ? "Cleaning up audio" : run.phase === "lectures" ? "Lecture" : "Starting";
+    if (running) {
+      const stop = el("button", { onclick: async () => {
+        stop.disabled = true; stop.textContent = "stopping…";
+        await api("POST", "/knowledge/raw-notes/stop").catch(() => {});
+      } }, "Stop");
+      status.replaceChildren(el("div", { class: "row" },
+        el("div", { class: "syncprogress" },
+          el("div", { class: "muted" }, one ? run.scope : "All courses"),
+          el("b", {}, run.total ? `${phase} ${Math.min(run.done + (run.phase === "lectures" ? 1 : 0), run.total)}/${run.total}` : phase),
+          run.lecture && run.phase === "lectures" ? ` — ${one ? "" : run.course + " · "}${run.lecture}` : "",
+          run.step ? el("div", { class: "muted" }, run.step) : "",
+          run.detail ? el("div", { class: "muted rawdetail" }, run.detail) : "",
+          run.total ? el("progress", { max: run.total, value: run.done }) : ""),
+        stop));
+    } else {
+      const when = run.ended ? new Date(run.ended * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      status.replaceChildren(el("div", { class: "row" },
+        el("span", {}, el("b", {}, { done: "Raw notes done", stopped: "Stopped", error: "Finished with problems" }[run.state] || run.state),
+          when ? ` at ${when}` : "", run.error ? ` — ${run.error}` : ""),
+        el("button", { onclick: () => this.open() }, "Refresh the table")));
+    }
+    list.replaceChildren(...[...run.updates].reverse().map((u) => el("li", { class: `upd-${u.kind}` },
+      el("span", { class: "muted" }, u.t + " "), u.lecture ? el("b", {}, u.lecture + ": ") : "", u.text)));
   },
 
   /** Estimate → Run → progress → result. Every cloud call is counted before anything runs. */

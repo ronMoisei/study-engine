@@ -190,9 +190,10 @@ def _run(cfg, store, llm, embedder, courses, transcribe, say, stop, rebuild, rep
             else:
                 say({"course": c, "stage": "transcribe", "done": 0, "total": len(row["to_transcribe"])})
                 code = c.split(" ")[0]
-                r = subprocess.run([str(lp[0]), str(lp[1]), "--course", code, "--all", "--yes"],
+                from .rawnotes import pipeline_env
+                r = subprocess.run([str(lp[0]), "-X", "utf8", str(lp[1]), "--course", code, "--all", "--yes"],
                                    cwd=str(lp[1].parent), capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace")
+                                   errors="replace", env=pipeline_env(lp[0]))
                 if r.returncode != 0:
                     report["errors"].append(f"{c}: lecture pipeline exited {r.returncode}: "
                                             f"{(r.stderr or r.stdout).strip()[-300:]}")

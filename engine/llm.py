@@ -238,6 +238,8 @@ class StubProvider:
             out = {"notes": notes}
         elif job == "polish":
             out = {"markdown": data["text"]}
+        elif job == "narrate":
+            out = {"text": f"{data['lecture'] or 'run'}: {data['event']}."}
         elif job == "atomize":
             # one concept per passage: its first sentence of 4+ words is the definition and the quote
             cs = []
