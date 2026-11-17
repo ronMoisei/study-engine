@@ -125,11 +125,20 @@ def _estimate_v4(cfg, inv, courses, rebuild):
         st = coursesync.load_state(cfg, c)
         todo = [f for f in files if (st["lectures"].get(f) or {}).get("drafts") is None]
         chars = [_chars(cfg, f) for f in todo]
+        # link calls: lectures packed by full-note size (a lecture not prepared yet: ~1/3 of its raw size)
+        full = {}
+        for f in files:
+            x = st["lectures"].get(f) or {}
+            try:
+                full[f] = (cfg.material / x["full"]).stat().st_size if x.get("full") else _chars(cfg, f) // 3
+            except OSError:
+                full[f] = _chars(cfg, f) // 3
         e = {"course": c, "files": len(files), "prepared": len(files) - len(todo), "rebuild": c in rebuild,
              "transcribe": len(row["to_transcribe"]),
              "polish": sum(max(1, math.ceil(n / coursesync.POLISH_CHARS)) for n in chars),
              "atomize": sum(max(1, math.ceil(0.7 * n / coursesync.ATOM_CHARS)) for n in chars),
-             "graph": (1 + len(files)) if files else 0,          # consolidate once + one link call per lecture
+             "graph": (1 + sum(max(1, math.ceil(sum(full[r] for r in b) / coursesync.LINK_CHARS))
+                               for b in coursesync.link_batches(files, full))) if files else 0,   # consolidate + links
              "chars": sum(chars), "retires": len(coursesync.retiring(cfg, graph, c)) if c in rebuild else 0}
         out.append(e)
         for k in total:

@@ -101,8 +101,13 @@ class AgyProvider:
         schema_file = self.cfg.agy_workdir / f"schema_{job}_{threading.get_ident()}.json"   # parallel calls
         timeout = int(self.cfg.job_timeout_s.get(job, self.cfg.agy_timeout_s))
         schema_file.write_text(json.dumps(schema), encoding="utf-8")
+        # A schema with "x-text-field" asks for PLAIN TEXT (no --json-schema): long Markdown with code and LaTeX
+        # inside a JSON string must be escaped (models even double-encode it), and one bad escape fails the call.
+        text_field = schema.get("x-text-field")
         last_err = None
         for attempt in range(retries + 1):
+            if attempt:
+                time.sleep(min(90, 20 * attempt))         # a failed call is often a passing hiccup: wait, then retry
             t0 = time.time()
             raw, usage, out, err = "", {}, None, None
             try:
@@ -111,8 +116,8 @@ class AgyProvider:
                 message = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n"
                 proc = subprocess.run(
                     [self.cfg.agy, "-p", "", "--input-format", "stream-json", "--output-format", "stream-json",
-                     "--model", model, "--json-schema", str(schema_file), "--disable-slash-commands",
-                     "--print-timeout", f"{timeout}s"],
+                     "--model", model] + ([] if text_field else ["--json-schema", str(schema_file)]) +
+                    ["--disable-slash-commands", "--print-timeout", f"{timeout}s"],
                     input=message, cwd=self.cfg.agy_workdir, capture_output=True, text=True, encoding="utf-8",
                     timeout=timeout + 30)
                 raw = (proc.stdout or "") + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
@@ -132,11 +137,18 @@ class AgyProvider:
                     err = f"agy: {envelope['error']}"
                 usage = find_usage(envelope.get("usage", {}))
                 # result: {status, response, structured_output, usage, ...}
-                structured = envelope.get("structured_output")
-                out = structured if isinstance(structured, dict) and not validate(structured, schema) \
-                    else find_conforming(envelope, schema)
-                if out is None:
-                    err = f"no schema-conforming JSON in agy output (exit {proc.returncode})"
+                if text_field:
+                    text = plain_text(envelope.get("response"))
+                    out = {text_field: text} if text and not err else None
+                    if out is None and not err:
+                        err = f"empty answer from agy (exit {proc.returncode}): {(proc.stderr or '').strip()[-200:]}"
+                else:
+                    structured = envelope.get("structured_output")
+                    out = structured if isinstance(structured, dict) and not validate(structured, schema) \
+                        else find_conforming(envelope, schema)
+                    if out is None:
+                        err = (f"no schema-conforming JSON in agy output (exit {proc.returncode})"
+                               + (f": {proc.stderr.strip()[-200:]}" if proc.stderr and proc.stderr.strip() else ""))
             except subprocess.TimeoutExpired:
                 err = "agy timed out"
             except FileNotFoundError:
@@ -252,7 +264,7 @@ class StubProvider:
             # its own title in the notes; the quote is that span
             low, links = data["notes"].lower(), []
             titles = {c["id"]: c["title"] for c in data["catalog"]}
-            for a in data["this_lecture"]:
+            for a in data["taught_here"]:
                 for b, tb in titles.items():
                     if a != b and tb.lower() in low and titles[a].lower() in low and \
                             low.index(tb.lower()) < low.index(titles[a].lower()):
@@ -370,6 +382,15 @@ class Router:
             self._cache[prov] = PROVIDERS[prov](self.cfg, self.store)
         out = self._cache[prov].run(job, prompt, schema, session=session, retries=retries, model=model)
         return repair_latex(unwrap_double(out, schema))
+
+
+def plain_text(response):
+    """A plain-text answer: the model's text, without a code fence wrapped around ALL of it."""
+    if not isinstance(response, str):
+        return ""
+    t = response.strip()
+    m = re.fullmatch(r"```(?:markdown|md)?\n(.*)\n```", t, re.S)        # only a fence around the whole note
+    return (m.group(1) if m else t).strip()
 
 
 def unwrap_double(out, schema):

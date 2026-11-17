@@ -49,13 +49,15 @@ class CourseGraph(unittest.TestCase):
         cfg, store, llm, emb, c = course_env()
         e = syncrun.estimate(cfg, [c.name])
         self.assertEqual(e["method"], "v4")
-        self.assertEqual((e["total"]["files"], e["total"]["polish"], e["total"]["graph"]), (2, 2, 3))
+        # two small lectures: one consolidate call + ONE link call for both
+        self.assertEqual((e["total"]["files"], e["total"]["polish"], e["total"]["graph"]), (2, 2, 2))
 
         r = syncrun.run(cfg, store, llm, emb, [c.name], transcribe=False)
         self.assertEqual(r["errors"], [])
         self.assertEqual(len(r["proposals"]), 1)                        # ONE proposal for the course
         p = ingest.load(cfg, r["proposals"][0])
         self.assertEqual((p["origin"], p["course"], p["rebuild"]), ("course", c.name, False))
+        self.assertEqual(p["stats"]["link_calls"], 1)
 
         # stage 2: full notes beside the raw notes, marked as written by the engine
         full = c / "01_Study" / "Notes" / "Full Notes" / "1 - Descent" / "1 - Descent_Full_Notes.md"
@@ -151,6 +153,21 @@ class CourseGraph(unittest.TestCase):
         self.assertEqual({i for i, n in g.nodes.items() if n.course == c.name},
                          old | {"learning_rate_schedule"})                  # same ids written again; session note kept
         self.assertIn(c.name, json.loads((cfg.shared_dir / "rederived.json").read_text(encoding="utf-8")))
+
+
+class LinkBatches(unittest.TestCase):
+    def test_consecutive_lectures_share_a_call(self):
+        size = {"a": 3000, "b": 4000, "c": 60000, "d": 50000, "e": 150000, "f": 2000}
+        self.assertEqual(coursesync.link_batches(list(size), size), [["a", "b", "c"], ["d"], ["e"], ["f"]])
+
+
+class PlainText(unittest.TestCase):
+    def test_full_notes_come_back_as_markdown(self):
+        from engine.llm import plain_text
+        self.assertEqual(plain_text("```markdown\n## A\n\n```python\nx = 1\n```\n```"), "## A\n\n```python\nx = 1\n```")
+        self.assertEqual(plain_text("## A\n\n```python\nx = 1\n```"), "## A\n\n```python\nx = 1\n```")
+        self.assertEqual(plain_text(None), "")
+        self.assertEqual(coursesync.POLISH_SCHEMA["x-text-field"], "markdown")
 
 
 class DoubleEncoded(unittest.TestCase):
