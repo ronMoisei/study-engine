@@ -123,17 +123,23 @@ def plain(f, lecture):
 class RawNotesRun:
     """One run. `state` is what the panel polls (GET /knowledge/raw-notes)."""
 
-    def __init__(self, cfg, llm, course=None):
+    def __init__(self, cfg, llm, courses=None):
         self.cfg, self.llm = cfg, llm
-        self.course = course or None                             # a course folder name, or None: every course
-        self.code = course.split(" ")[0] if course else None
+        self.courses = list(courses) if courses else None          # course folder names, or None: every course
+        self.codes = ",".join(c.split(" ")[0] for c in self.courses) if self.courses else None
+        if not self.courses:
+            scope = "all courses"
+        elif len(self.courses) == 1:
+            scope = self.courses[0]
+        else:
+            scope = f"{len(self.courses)} courses: " + ", ".join(c.split(" ")[0] for c in self.courses)
         self.proc = None
         self.stopping = False
         self._lecture_lines, self._ended_lecture = [], False
         self.narrator = ThreadPoolExecutor(max_workers=1)        # updates in order, never blocking the log reader
         self.state = {"state": "running", "phase": "starting", "done": 0, "total": 0, "course": "", "lecture": "",
                       "step": "", "detail": "", "updates": [], "errors": [], "started": time.time(), "ended": None,
-                      "log": "", "model": cfg.models.get("narrate", ""), "scope": course or "all courses"}
+                      "log": "", "model": cfg.models.get("narrate", ""), "scope": scope}
         self.lock = threading.Lock()
 
     # ── updates ──
@@ -176,7 +182,7 @@ class RawNotesRun:
                                    "lecture_python)")
             py, script = lp
             todo = self.left()
-            only = ["--course", self.code] if self.code else []
+            only = ["--course", self.codes] if self.codes else []
             self.add(f"Starting ({st['scope']}): {todo} lectures without raw notes. First the audio clean-up, then "
                      "the lectures one by one (about 10 minutes each).")
             with open(log, "w", encoding="utf-8") as fh:
@@ -218,9 +224,9 @@ class RawNotesRun:
     def left(self):
         """Lectures still without raw notes, in this run's scope."""
         inv = knowledge_sync.inventory(self.cfg)
-        if not self.course:
+        if not self.courses:
             return inv["totals"]["to_transcribe"]
-        return sum(len(r["to_transcribe"]) for r in inv["courses"] if r["course"] == self.course)
+        return sum(len(r["to_transcribe"]) for r in inv["courses"] if r["course"] in self.courses)
 
     def _stream(self, cmd, cwd, fh, on_line, what):
         self.proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -66,23 +66,30 @@ class CreateRawNotes(unittest.TestCase):
         with open(st["log"], encoding="utf-8") as fh:
             self.assertIn("Total Audio Segments: 380", fh.read())         # the full log is kept
 
-    def test_one_course_and_only_when_there_is_something_new(self):
+    def test_ticked_courses_and_only_when_there_is_something_new(self):
         from engine.material import MaterialError
         from engine.server import Engine
         cfg, llm = pipeline_env()
-        course = cfg.material / "01ABCDE - Optimization"
-        (course / "01_Study" / "Lectures").mkdir(parents=True)
+        a, b, c = (cfg.material / n for n in ("01ABCDE - Optimization", "01FGHIJ - Statistics", "01KLMNO - Graphs"))
+        for course in (a, b, c):
+            (course / "01_Study" / "Lectures").mkdir(parents=True)
         engine = Engine(cfg, anki=object(), llm=llm)
         with self.assertRaises(MaterialError):                     # no recording without raw notes: no run
-            engine.start_raw_notes(course.name)
-        (course / "01_Study" / "Lectures" / "L1.mp4").write_bytes(b"x")
-        r = rawnotes.RawNotesRun(cfg, llm, course.name)
-        self.assertEqual(r.left(), 1)
+            engine.start_raw_notes([a.name, b.name])
+        (a / "01_Study" / "Lectures" / "L1.mp4").write_bytes(b"x")
+        (b / "01_Study" / "Lectures" / "L2.m4a").write_bytes(b"x")
+        with self.assertRaises(MaterialError):                     # ticked course has nothing new
+            engine.start_raw_notes([c.name])
+        with mock.patch.object(rawnotes.RawNotesRun, "run"):        # what the engine would start, not the run
+            self.assertEqual(engine.start_raw_notes([a.name, c.name])["scope"], a.name)
+            engine.raw_run.state["state"] = "done"
+            self.assertEqual(engine.start_raw_notes([a.name, b.name, c.name])["scope"], "all courses")
+        r = rawnotes.RawNotesRun(cfg, llm, [a.name, b.name])
+        self.assertEqual((r.left(), r.view()["scope"]), (2, "2 courses: 01ABCDE, 01FGHIJ"))
         with mock.patch.object(rawnotes, "start_ollama", return_value=True):
             r.run()
-        self.assertEqual(r.view()["scope"], course.name)
         with open(r.view()["log"], encoding="utf-8") as fh:
-            self.assertIn("ARGS --all-courses --yes --course 01ABCDE", fh.read())
+            self.assertIn("ARGS --all-courses --yes --course 01ABCDE,01FGHIJ", fh.read())
 
     def test_facts_and_excerpt(self):
         lines = ["[Audio] Detected language: 'en' (probability 1.00), Duration: 3600.0s",

@@ -48,6 +48,7 @@ const KnowledgeSync = {
       rebuilds.set(c.course, cb); return cb;
     };
     const controls = this.controls(picks, rebuilds);
+    const raw = this.rawBox();
     dr.replaceChildren(
       el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
       el("h3", {}, "Sync Knowledge"),
@@ -57,7 +58,7 @@ const KnowledgeSync = {
         el("span", { class: "pill" }, count(t.raw_new, "raw notes not in the graph")),
         el("span", { class: "pill" }, count(t.slides_new, "slide decks not in the graph")),
         t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : ""),
-      this.rawBox(r.courses),
+      raw,
       el("table", { class: "inv" },
         el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts", "Rebuild"].map((h) => el("th", {}, h))),
         ...rows.map((c) => el("tr", {},
@@ -73,6 +74,7 @@ const KnowledgeSync = {
           el("td", {}, rebuild(c))))),
       el("div", { class: "muted" }, "Slide decks are analysed only for courses without recordings (their raw notes already carry the slide text)."),
       controls);
+    this.rawWire(raw, picks, r.courses);                            // the button follows the course ticks
     if (this.job) return this.watch(this.job, controls);           // a run in progress: keep showing it
     try {                                                           // the last run, whichever PC ran it
       const last = await api("GET", "/knowledge/last-run");
@@ -85,30 +87,39 @@ const KnowledgeSync = {
 
   /** "Create raw notes": stage 1 alone — the offline pipeline on this PC (audio clean-up, Whisper, slides,
    *  handwriting), with a short update from Hydrogen (low) after each lecture. */
-  rawBox(courses) {
+  rawBox() {
     clearInterval(this.rawPoll);
     const box = el("div", { class: "rawbox" });
-    // only courses with new recordings (video or audio) that have no raw notes yet
-    const fresh = courses.filter((c) => c.to_transcribe.length);
-    const todo = fresh.reduce((s, c) => s + c.to_transcribe.length, 0);
-    const scope = el("select", { class: "rawscope", disabled: !todo },
-      el("option", { value: "" }, `All courses (${todo} new lecture${todo === 1 ? "" : "s"})`),
-      ...fresh.map((c) => el("option", { value: c.course }, `${c.course} (${c.to_transcribe.length} new)`)));
-    const info = el("div", { class: "muted" }, todo
-      ? "Audio clean-up, Whisper, slides and handwriting on this PC (free, uses the GPU, about 10 min per lecture). Hydrogen (low) reports after each lecture."
-      : "No new lectures: every recording has raw notes.");
-    const btn = el("button", { class: "primary", disabled: !todo, onclick: async () => {
-      btn.disabled = true;
-      try { this.rawShow(box, (await api("POST", "/knowledge/raw-notes", { course: scope.value || null })).run); this.rawWatch(box); }
-      catch (e) { info.textContent = e.message; btn.disabled = false; }
-    } }, "Create raw notes");
-    box.append(el("div", { class: "row" }, btn, scope), info, el("div", { class: "rawstatus" }), el("ul", { class: "rawupdates" }));
+    box.append(el("div", { class: "row" }, el("button", { class: "primary", disabled: true }, "Create raw notes"),
+      el("span", { class: "muted rawinfo" })), el("div", { class: "rawstatus" }), el("ul", { class: "rawupdates" }));
     api("GET", "/knowledge/raw-notes").then((r) => {        // a run in progress (or the last one): show it
       if (!r.run) return;
       this.rawShow(box, r.run);
       if (r.run.state === "running") this.rawWatch(box);
     }).catch(() => {});
     return box;
+  },
+
+  /** The button processes the ticked courses that have new recordings (video or audio) without raw notes. */
+  rawWire(box, picks, courses) {
+    const btn = box.querySelector("button.primary"), info = box.querySelector(".rawinfo");
+    const fresh = new Map(courses.filter((c) => c.to_transcribe.length).map((c) => [c.course, c.to_transcribe.length]));
+    const ticked = () => [...picks].filter(([c, cb]) => cb.checked && fresh.has(c)).map(([c]) => c);
+    const update = () => {
+      if (this.rawRunning) return;
+      const cs = ticked(), n = cs.reduce((s, c) => s + fresh.get(c), 0);
+      btn.disabled = !n;
+      info.textContent = !fresh.size ? "No new lectures: every recording has raw notes."
+        : !n ? `Tick the courses to transcribe (${[...fresh.values()].reduce((a, b) => a + b, 0)} new lectures in ${fresh.size} course${fresh.size === 1 ? "" : "s"}).`
+        : `${n} new lecture${n === 1 ? "" : "s"} in ${cs.length === fresh.size ? "every course that has new recordings" : cs.map((c) => c.split(" ")[0]).join(", ")} — audio clean-up, Whisper, slides and handwriting on this PC (free, GPU, about 10 min per lecture); Hydrogen (low) reports after each lecture.`;
+    };
+    for (const cb of picks.values()) cb.addEventListener("change", update);
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try { this.rawShow(box, (await api("POST", "/knowledge/raw-notes", { courses: ticked() })).run); this.rawWatch(box); }
+      catch (e) { info.textContent = e.message; btn.disabled = false; }
+    };
+    update();
   },
 
   rawWatch(box) {
@@ -125,12 +136,11 @@ const KnowledgeSync = {
 
   rawShow(box, run) {
     const status = box.querySelector(".rawstatus"), list = box.querySelector(".rawupdates");
-    const btn = box.querySelector("button.primary"), scope = box.querySelector(".rawscope");
+    const btn = box.querySelector("button.primary"), info = box.querySelector(".rawinfo");
     const running = run.state === "running";
+    this.rawRunning = running;
     if (btn) { if (running) btn.disabled = true; btn.style.display = running ? "none" : ""; }
-    if (scope) scope.style.display = running ? "none" : "";
-    const about = box.querySelector(":scope > .muted");
-    if (about) about.style.display = running ? "none" : "";
+    if (info) info.style.display = running ? "none" : "";
     const one = run.scope && run.scope !== "all courses";
     const phase = run.phase === "audio" ? "Cleaning up audio" : run.phase === "lectures" ? "Lecture" : "Starting";
     if (running) {

@@ -121,8 +121,6 @@ table.inv th { color: var(--s-muted); font-weight: 600; }
 .syncprogress { flex: 1; }
 .rawbox { border: 1px solid var(--s-line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
 .rawbox .row { align-items: flex-start; }
-.rawbox .rawscope { max-width: 420px; }
-.rawbox > .muted { margin: 4px 0; }
 .rawbox progress { width: 100%; height: 6px; margin-top: 4px; }
 .rawdetail { font-family: ui-monospace, monospace; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 560px; }
 ul.rawupdates { list-style: none; padding: 0; margin: 6px 0 0; max-height: 220px; overflow-y: auto; font-size: 12px; }
