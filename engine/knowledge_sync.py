@@ -60,7 +60,8 @@ def _ingested(cfg, graph):
     """Material files (relative to Material/) already analysed: a proposal was made from them, or a graph note
     cites them as a source."""
     from . import coursesync
-    seen = {p["source"] for p in ingest.list_proposals(cfg)} | coursesync.graphed(cfg)
+    from . import lecturesync
+    seen = {p["source"] for p in ingest.list_proposals(cfg)} | coursesync.graphed(cfg) | lecturesync.graphed(cfg)
     for n in graph.nodes.values():
         for s in n.sources or []:
             path = str(s).strip("[]").split("#")[0].replace("\\", "/")

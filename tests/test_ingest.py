@@ -83,14 +83,49 @@ class Format(unittest.TestCase):
             self.assertEqual(back[k], CONCEPT[k], k)
         self.assertEqual(back["propositions"], CONCEPT["propositions"])          # LaTeX backslashes survive
 
+    def test_typed_notes_round_trip(self):
+        algo = {**CONCEPT, "id": "power_iteration", "title": "Power iteration", "kind": "algorithm",
+                "topics": ["linear-algebra/eigenvalues"], "requires": ["graph_laplacian"],
+                "related": [("contrasts_with", "graph_laplacian")],
+                "pseudocode": "x = random()\n# normalise every step\nrepeat: x = A x / |A x|"}
+        text = notes.render_concept(algo)
+        self.assertEqual(notes.validate_concept(text, "power_iteration"), [])
+        self.assertIn("topics: [\"linear-algebra/eigenvalues\"]", text)
+        self.assertIn("```\nx = random()\n# normalise every step", text)       # a # comment is not a heading
+        back = notes.parse_concept(text)
+        self.assertEqual((back["kind"], back["topics"], back["requires"], back["related"]),
+                         ("algorithm", ["linear-algebra/eigenvalues"], ["graph_laplacian"],
+                          [("contrasts_with", "graph_laplacian")]))
+        self.assertEqual((back["domain"], back["topic"]), ("linear-algebra", "eigenvalues"))
+        self.assertEqual(notes.render_concept(back), text)
+        thm = {**algo, "id": "t", "kind": "theorem", "proof": "By induction on k."}
+        self.assertEqual(notes.parse_concept(notes.render_concept(thm))["proof"], "By induction on k.")
+        pit = {**algo, "id": "p", "kind": "pitfall", "pseudocode": ""}
+        self.assertEqual(notes.validate_concept(notes.render_concept(pit), "p"), [])
+
+    def test_v2_notes_are_still_read(self):
+        v2 = ("---\nid: a\ntype: concept\ntitle: \"A\"\naliases: []\nkind: definition\ndomain: spectral\n"
+              "topic: graph-matrices\ncourse: \"01ABCDE - X\"\nepistemic_status: definition\nsources:\n  - \"s\"\n---\n"
+              "# A\n\nA is the first thing we define.\n\n## Propositions\n*none*\n\n## Requires\n"
+              "- requires:: [[b]]\n\n## Prerequisite of\n- prerequisite_of:: [[c]]\n\n## Related\n"
+              "- contrasts_with:: [[d]]\n")
+        c = notes.parse_concept(v2)
+        self.assertEqual((c["topics"], c["requires"], c["prerequisite_of"], c["related"], c["course"]),
+                         (["spectral/graph-matrices"], ["b"], ["c"], [("contrasts_with", "d")], "01ABCDE - X"))
+        self.assertEqual(notes.validate_concept(notes.render_concept(c), "a"), [])     # rewritten in the new format
+
     def test_validator_rejects_malformed_notes(self):
         good = notes.render_concept(CONCEPT)
         cases = {
             "file name 'x'": (good, "x", None),
             "kind": (good.replace("kind: definition", "kind: blob"), "graph_laplacian", None),
-            "sections": (good.replace("## Related", "## See also"), "graph_laplacian", None),
-            "malformed line": (good.replace("- requires:: [[degree_matrix]]", "- needs [[degree_matrix]]"),
-                               "graph_laplacian", None),
+            "sections": (good.replace("## Propositions", "## See also"), "graph_laplacian", None),
+            "malformed item": (good.replace('"[[degree_matrix]]"', '"needs degree_matrix"'), "graph_laplacian", None),
+            "macro/sub": (good.replace('"spectral/graph-matrices"', '"graph-matrices"'), "graph_laplacian", None),
+            "pseudocode": (good.replace("kind: definition", "kind: algorithm").replace(
+                "## Propositions", "## Pseudocode\nrepeat: step\n\n## Propositions"), "graph_laplacian", None),
+            "pitfall of": (good.replace("kind: definition", "kind: pitfall").replace(
+                'prerequisites: ["[[degree_matrix]]"]', "prerequisites: []"), "graph_laplacian", None),
             "does not resolve": (good, "graph_laplacian", set()),
             "H1": (good.replace("# Graph Laplacian", "# Laplacian"), "graph_laplacian", None),
             "falsification": (good.replace("epistemic_status: definition", "epistemic_status: unverified"),
@@ -208,7 +243,7 @@ class Pipeline(unittest.TestCase):
     def test_apply_writes_valid_notes_topics_and_plan(self):
         s = ingest.apply(self.cfg, self.p["id"])
         self.assertEqual(s["errors"], [])
-        self.assertEqual(sorted(s["written"]), ["spectral/fiedler_value_is_the", "spectral/spectral_clustering_partitions_vertices"])
+        self.assertEqual(sorted(s["written"]), ["fiedler_value_is_the", "spectral_clustering_partitions_vertices"])
         for f in self.cfg.graph.rglob("*.md"):
             if not f.name.startswith("_"):
                 self.assertEqual(notes.validate_concept(f.read_text(encoding="utf-8"), f.stem), [], f.name)
@@ -222,13 +257,13 @@ class Pipeline(unittest.TestCase):
         fiedler, clustering = self.items("new")
         s = ingest.apply(self.cfg, self.p["id"], accept=[clustering["index"]])
         self.assertEqual(s["dropped_edges"][0]["reason"], "target not approved")
-        note = notes.parse_concept((self.cfg.graph / "spectral" / f"{clustering['slug']}.md").read_text(encoding="utf-8"))
+        note = notes.parse_concept((self.cfg.graph / f"{clustering['slug']}.md").read_text(encoding="utf-8"))
         self.assertEqual(note["requires"], [])
         cfg2, store2, llm2, emb2, src2 = make_env()
         p2 = ingest.ingest(cfg2, store2, llm2, emb2, src2, "spectral")
         f2 = next(it for it in p2["items"] if it["decision"] == "new")
         ingest.apply(cfg2, p2["id"], accept=[f2["index"]], reject_edges=[[f2["slug"], "requires", "graph_laplacian"]])
-        note = notes.parse_concept((cfg2.graph / "spectral" / f"{f2['slug']}.md").read_text(encoding="utf-8"))
+        note = notes.parse_concept((cfg2.graph / f"{f2['slug']}.md").read_text(encoding="utf-8"))
         self.assertEqual(note["requires"], [])
 
 
@@ -269,7 +304,7 @@ class Vetoes(unittest.TestCase):
         self.assertEqual(e["confidence"], "conflict")
         self.assertFalse(e["accepted"])
         s = ingest.apply(cfg, p["id"])
-        note = notes.parse_concept((cfg.graph / "spectral" / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
+        note = notes.parse_concept((cfg.graph / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
         self.assertEqual(note["requires"], [])                          # conflicts are not written by default
         self.assertEqual(s["errors"], [])
 
@@ -281,7 +316,7 @@ class Vetoes(unittest.TestCase):
         cfg, p = self.run_with(ans)
         ingest.apply(cfg, p["id"], accept_edges=[["fiedler_value_is_the", "requires",
                                                   "spectral_clustering_partitions_vertices"]])
-        note = notes.parse_concept((cfg.graph / "spectral" / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
+        note = notes.parse_concept((cfg.graph / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
         self.assertEqual(note["requires"], ["spectral_clustering_partitions_vertices"])
 
     def test_shortcut_link_is_removed(self):
@@ -333,7 +368,7 @@ class Vetoes(unittest.TestCase):
         before = course_file.read_text(encoding="utf-8")
         ingest.apply(cfg, p["id"])
         self.assertEqual(course_file.read_text(encoding="utf-8"), before)          # course note untouched
-        note = notes.parse_concept((cfg.graph / "spectral" / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
+        note = notes.parse_concept((cfg.graph / "fiedler_value_is_the.md").read_text(encoding="utf-8"))
         self.assertEqual(note["prerequisite_of"], ["degree_matrix"])
         self.assertIn(("requires", "fiedler_value_is_the"), G.Graph.load(cfg).nodes["degree_matrix"].edges)
 

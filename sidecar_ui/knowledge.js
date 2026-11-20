@@ -16,6 +16,15 @@ const PALETTES = {
   mono: ["#d8d8d8", "#bcbcbc", "#a0a0a0", "#e8e8e8", "#c8c8c8", "#b0b0b0"],
 };
 const URGENCY = ["misconception", "fragile", "in_progress", "held", "untested"];
+const GREY = "#4d4d4d";                 // other topics' concepts when one topic is coloured
+const WHITE = "#f2f2f2";                // not mastered yet
+/** White -> `hex` by `t` (0..1): the mastery fill of a cluster. */
+function mix(hex, t) {
+  const c = (hex || "#888888").replace("#", ""), w = [242, 242, 242];
+  const rgb = [0, 2, 4].map((k) => parseInt(c.slice(k, k + 2), 16));
+  const v = rgb.map((x, k) => Math.round(w[k] + (x - w[k]) * Math.max(0, Math.min(1, t))));
+  return `rgb(${v.join(",")})`;
+}
 const BOX = { macroW: 210, macroH: 130, pad: 34, gapX: 46, gapY: 80 };
 const GEOMETRY = ["detail", "shape", "repulsion", "linkLength", "gravity", "direction", "spacing", "nodeSize", "labelSize"];
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && Knowledge.sel) Knowledge.clearEdge(); });
@@ -23,16 +32,27 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && Knowledg
 /** "Sync Knowledge": what is new in every course, stage by stage (inventory only; no model calls). */
 const KnowledgeSync = {
   STAGES: [
-    ["1", "Offline lectures", "video (or audio) + slides → raw notes, on this PC (Whisper, slide matching, local vision)"],
-    ["2", "Full notes", "Hydrogen (high) polishes each raw note into full notes that keep every derivation and every “why”"],
-    ["3", "Atomic concepts", "Hydrogen (medium) writes the atomic concepts of each full note: definition, theorem, algorithm…"],
-    ["4", "Course graph", "Argon, once every lecture is done: chapters, duplicates, then the links it reads from the reasoning in the full notes — one Inbox proposal per course"],
+    ["1", "Raw notes", "video (or audio) + slides → raw notes, on this PC (Whisper, slide matching, the professor's handwriting)"],
+    ["2", "Atomic notes + easy cards", "Hydrogen (high) reads each lecture, ~45 minutes at a time, in lecture order: typed notes (definition, theorem, algorithm, pitfall…) with topics and direct prerequisites; easy cards for definitions, theorems, algorithms. Labs give techniques and pitfalls only, not theory again"],
+    ["·", "Repeat check", "code finds the notes you already have that a draft may repeat; a small model decides: add only the new facts, skip it (nothing new), make it a sub-note, or keep it new"],
+    ["3", "Exercises", "Hydrogen (high): 5–10 medium exercises per lecture on what the professor stresses (labs: 8–15, mostly their own exercises, as Code cards when it is code)"],
+    ["4", "Graph", "code, no model: links checked (loops, shortcuts, lecture order) — one Inbox proposal per course; approving it writes the notes and sends the cards to the course's Anki deck"],
   ],
-  async open() {
-    const wrap = Graph.els.wrap;
-    wrap.querySelector(".drawer")?.remove();
-    const dr = el("div", { class: "drawer wide" }, el("span", { class: "muted" }, "scanning Material/…"));
-    wrap.append(dr);
+  /** The Sync tab: the whole pipeline on one page. */
+  page() {
+    const box = el("div", { class: "syncpage" });
+    view().append(box);
+    this.open(box);
+  },
+
+  async open(target) {
+    this.target = target || this.target;
+    let dr = this.target;
+    if (!dr || !dr.isConnected) {                      // no tab open: show it there
+      document.querySelector('#tabs button[data-tab="sync"]').click();
+      return;
+    }
+    dr.replaceChildren(el("span", { class: "muted" }, "scanning Material/…"));
     let r;
     try { r = await api("GET", "/knowledge/inventory"); } catch (e) { dr.replaceChildren(); return err(dr, e); }
     const t = r.totals;
@@ -49,16 +69,18 @@ const KnowledgeSync = {
     };
     const controls = this.controls(picks, rebuilds);
     const raw = this.rawBox();
+    const models = el("div", { class: "syncstep" });
+    this.modelsBox(models);
     dr.replaceChildren(
-      el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
       el("h3", {}, "Sync Knowledge"),
       el("ol", { class: "stages" }, ...this.STAGES.map(([n, name, what]) => el("li", {}, el("b", {}, name), el("span", { class: "muted" }, ` — ${what}`)))),
       el("div", { class: "row" },
         el("span", { class: "pill" }, count(t.to_transcribe, "lectures to transcribe")),
         el("span", { class: "pill" }, count(t.raw_new, "raw notes not in the graph")),
         el("span", { class: "pill" }, count(t.slides_new, "slide decks not in the graph")),
-        t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : ""),
-      raw,
+        t.misrouted ? el("span", { class: "pill st st-misconception" }, count(t.misrouted, "raw notes in the wrong course")) : "",
+        el("button", { onclick: () => this.open() }, "Refresh")),
+      el("div", { class: "muted" }, "Tick the courses, then run a step: each step works on the ticked courses."),
       el("table", { class: "inv" },
         el("tr", {}, ...["", "Course", "Lectures", "To transcribe", "New raw notes", "New slides", "Concepts", "Rebuild"].map((h) => el("th", {}, h))),
         ...rows.map((c) => el("tr", {},
@@ -73,7 +95,9 @@ const KnowledgeSync = {
           el("td", {}, c.concepts || "—"),
           el("td", {}, rebuild(c))))),
       el("div", { class: "muted" }, "Slide decks are analysed only for courses without recordings (their raw notes already carry the slide text)."),
-      controls);
+      el("div", { class: "syncstep" }, el("h4", {}, "1 · Transcribe new lectures"), raw),
+      el("div", { class: "syncstep" }, el("h4", {}, "2 · Atomic notes, cards and graph (from the raw notes you have)"), controls),
+      models);
     this.rawWire(raw, picks, r.courses);                            // the button follows the course ticks
     if (this.job) return this.watch(this.job, controls);           // a run in progress: keep showing it
     try {                                                           // the last run, whichever PC ran it
@@ -173,13 +197,15 @@ const KnowledgeSync = {
     const box = el("div", { class: "synccontrols" });
     const chosen = () => [...picks].filter(([, cb]) => cb.checked).map(([c]) => c);
     const rebuilding = () => [...rebuilds].filter(([c, cb]) => cb.checked && picks.get(c).checked).map(([c]) => c);
-    const transcribe = el("input", { type: "checkbox", checked: true });
     const out = el("div", { class: "muted" });
+    const limit = el("input", { type: "number", min: 1, placeholder: "all", class: "limit", title: "a test run: only the first N lectures of each ticked course" });
     const run = el("button", { class: "primary", disabled: true, onclick: async () => {
       run.disabled = true;
-      try { const job = await api("POST", "/knowledge/sync", { courses: chosen(), transcribe: transcribe.checked, rebuild: rebuilding() }); this.job = job.id; this.watch(job.id, box); }
-      catch (e) { out.textContent = e.message; run.disabled = false; }
-    } }, "Run Sync");
+      try {
+        const job = await api("POST", "/knowledge/sync", { courses: chosen(), transcribe: false, rebuild: rebuilding(), limit: +limit.value || null });
+        this.job = job.id; this.watch(job.id, box);
+      } catch (e) { out.textContent = e.message; run.disabled = false; }
+    } }, "Generate notes & cards");
     const est = el("button", { onclick: async () => {
       const cs = chosen();
       if (!cs.length) { out.textContent = "Tick at least one course."; return; }
@@ -188,7 +214,17 @@ const KnowledgeSync = {
         const q = cs.map((c) => "course=" + encodeURIComponent(c)).concat(rebuilding().map((c) => "rebuild=" + encodeURIComponent(c)));
         const e = await api("GET", "/knowledge/estimate?" + q.join("&"));
         const t = e.total, m = e.models;
-        const v4 = e.method === "v4";
+        const v4 = e.method === "v4", v5 = e.method === "v5";
+        if (v5) {
+          out.replaceChildren(
+            el("div", {}, el("b", {}, `${t.files} lectures → about ${t.calls} cloud calls`), ` (${t.notes} note calls, one per ~45 minutes of lecture · ${t.exercises} exercise calls · plus a short repeat check per lecture)`,
+              t.prepared ? el("span", { class: "muted" }, ` · ${t.prepared} lectures already prepared`) : ""),
+            el("div", { class: "muted" }, `models: ${m.notes} · ${m.exercises} — lectures in order (each sees the earlier ones); the graph is built by code`),
+            +limit.value ? el("div", { class: "muted" }, `test run: only the first ${+limit.value} lectures of each course`) : "",
+            t.transcribe ? el("div", { class: "warn" }, `${t.transcribe} lectures have no raw notes yet: transcribe them first (step 1), or they are left out`) : "");
+          run.disabled = false;
+          return;
+        }
         out.replaceChildren(
           v4 ? el("div", {}, el("b", {}, `${t.files} lectures → about ${t.calls} cloud calls`),
             ` (${t.polish} full-note · ${t.atomize} atomic-concept · ${t.graph} course-graph calls)`,
@@ -201,13 +237,30 @@ const KnowledgeSync = {
             `Rebuild ${c.course.split(" - ")[0]}: when you approve its proposal, its ${c.retires} current notes move to .study/retired/ (kept, not deleted)`)) : []),
           t.transcribe ? el("div", {}, `${t.transcribe} lectures to transcribe first `,
             e.stage1_available ? el("span", { class: "muted" }, "(on this PC, free, slow: GPU)") : el("span", { class: "warn" }, "— the lecture pipeline is not set up on this PC: they will be skipped")) : "");
-        if (!e.stage1_available) { transcribe.checked = false; transcribe.disabled = true; }
         run.disabled = false;
       } catch (err) { out.textContent = err.message; }
     } }, "Estimate");
     for (const cb of picks.values()) cb.addEventListener("change", () => { run.disabled = true; });
-    box.append(el("div", { class: "row" }, est, run, el("label", { class: "muted" }, transcribe, " transcribe new lectures first (stage 1)")), out);
+    box.append(el("div", { class: "row" }, est, run, el("label", { class: "muted" }, "test: first ", limit, " lectures")), out);
     return box;
+  },
+
+  /** Which model runs each pipeline step (saved in the synced settings: every PC uses the same). */
+  async modelsBox(box) {
+    box.replaceChildren(el("h4", {}, "Models"), el("span", { class: "muted" }, "loading…"));
+    let r;
+    try { r = await api("GET", "/settings/models"); } catch (e) { box.replaceChildren(el("h4", {}, "Models")); return err(box, e); }
+    const msg = el("span", { class: "muted" });
+    const rows = Object.entries(r.jobs).map(([job, label]) => {
+      const cur = (r.models[job] || "").split(":").pop();
+      const sel = el("select", { onchange: async () => {
+        msg.textContent = "saving…";
+        try { await api("POST", "/settings/models", { [job]: sel.value }); msg.textContent = `${label}: ${sel.value} (saved for every PC)`; }
+        catch (e) { msg.textContent = e.message; }
+      } }, ...r.options.map((m) => el("option", { value: m, selected: m === cur }, m)));
+      return el("label", { class: "krow" }, el("span", {}, label), sel);
+    });
+    box.replaceChildren(el("h4", {}, "Models"), ...rows, msg);
   },
 
   watch(jid, box) {
@@ -216,14 +269,15 @@ const KnowledgeSync = {
     const stop = el("button", { onclick: async () => { await api("POST", "/knowledge/stop", { job: jid }); stop.disabled = true; stop.textContent = "stopping after this file…"; } }, "Stop");
     box.replaceChildren(el("div", { class: "row" }, line, stop));
     const STAGE = { transcribe: "1 · transcribing lectures", structure: "2 · Argon maps the knowledge", write: "3 · Hydrogen writes atomic concepts", relate: "4 · Argon organizes links",
-      polish: "2–3 · Hydrogen writes full notes and atomic concepts", consolidate: "4 · Argon organizes the course", link: "4 · Argon links the concepts from the full notes" };
+      polish: "2–3 · Hydrogen writes full notes and atomic concepts", consolidate: "4 · Argon organizes the course", link: "4 · Argon links the concepts from the full notes",
+      notes: "2–3 · Hydrogen writes notes, cards and exercises", graph: "4 · building the graph (no model)" };
     this.poll = setInterval(async () => {
       let j;
       try { j = await api("GET", `/jobs/${jid}`); } catch (e) { return; }
       const p = j.progress || {};
       if (j.state === "running") {
         line.replaceChildren(el("b", {}, STAGE[p.stage] || p.stage || "starting"), " — ", p.course || "",
-          p.stage === "polish" ? el("div", { class: "muted" }, `${p.done}/${p.total} lectures ready${p.file ? ` · last: ${p.file.split("/").pop()}` : ""}`)
+          p.stage === "polish" || p.stage === "notes" ? el("div", { class: "muted" }, `${p.done}/${p.total} lectures ready${p.file ? ` · last: ${p.file.split("/").slice(-2, -1)[0]}` : ""}`)
             : p.file ? el("div", { class: "muted" }, `${p.stage === "link" ? "lecture" : "file"} ${p.done + 1}/${p.total}: ${p.file.split("/").pop()}${p.steps ? ` · step ${p.step + 1}/${p.steps}` : ""}`) : "");
         return;
       }
@@ -235,22 +289,41 @@ const KnowledgeSync = {
             r.transcribed?.length ? ` · transcribed: ${r.transcribed.join(", ")}` : ""),
         ...(r.waiting || []).map((w) => el("div", { class: "warn" }, `${w.course}: ${w.reason}`)),
         ...(r.errors || []).map((e) => el("div", { class: "warn" }, e)),
-        el("button", { class: "primary", onclick: () => document.querySelector('#tabs button[data-tab="inbox"]').click() }, "Review in the Inbox"));
+        el("button", { class: "primary", onclick: () => document.querySelector('#tabs button[data-tab="teach"]').click() }, "Review in the Inbox"));
     }, 1500);
   },
 };
 
 const Knowledge = {
-  cfg: (() => { try { return { ...KDEFAULTS, ...JSON.parse(localStorage.getItem("study.kview") || "{}") }; } catch (e) { return { ...KDEFAULTS }; } })(),
+  cfg: (() => {
+    let c;
+    try { c = { ...KDEFAULTS, ...JSON.parse(localStorage.getItem("study.kview") || "{}") }; } catch (e) { c = { ...KDEFAULTS }; }
+    if (c.scheme !== 2) { c.colour = "course"; c.scheme = 2; }   // one colour per course (2026-11-20)
+    return c;
+  })(),
   open: new Set(),
   offsets: {},            // cluster id -> {dx, dy}: where the learner dragged it (this session)
   sel: null,              // selected link
 
-  save() { try { localStorage.setItem("study.kview", JSON.stringify(this.cfg)); } catch (e) { /* storage blocked */ } },
+  /** Settings live in the engine (.study/view.json): the panel's port, hence its browser storage, changes each start. */
+  async loadView() {
+    if (this.viewLoaded) return;
+    try {
+      const v = await api("GET", "/settings/view");
+      if (v && Object.keys(v).length) this.cfg = { ...KDEFAULTS, ...v, scheme: 2 };
+    } catch (e) { /* engine without it: keep the defaults */ }
+    this.viewLoaded = true;
+  },
+  save() {
+    try { localStorage.setItem("study.kview", JSON.stringify(this.cfg)); } catch (e) { /* storage blocked */ }
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => api("POST", "/settings/view", this.cfg).catch(() => {}), 400);
+  },
   set(k, v) {
     this.cfg[k] = v; this.save();
     if (["detail", "shape", "repulsion", "linkLength", "gravity", "direction", "spacing"].includes(k) && this.G?.knowledge()) this.draw(this.G, false);   // new geometry: refit
     else this.redraw();
+    if (k === "colour" || k === "palette") this.G?.courseInfo();       // the course colour key
   },
   redraw() { const G = this.G; if (G && G.knowledge()) this.draw(G, true); },
 
@@ -264,19 +337,41 @@ const Knowledge = {
     G.center({ id });
   },
 
+  /** One colour per course (the same whatever is shown): every course in the vault, in name order. */
+  courseColours(d) {
+    const pal = PALETTES[this.cfg.palette] || PALETTES.vivid, out = {};
+    const order = [0, 4, 1, 7, 2, 5, 3, 8, 6, 9];          // far-apart hues first (vivid: purple, red, teal, …)
+    Object.keys(d.groups || {}).sort().forEach((g, i) => { out[g] = pal[order[i % order.length] % pal.length]; });
+    return out;
+  },
+
+  /** The course coloured on the map, or null for every course. */
+  course() { const c = this.G?.state.course; return c && c !== ALL ? c : null; },
+
+  /** Hue = the topic (glow, and the fill once mastered); fill = mastery: a cluster blends from white to its hue by the
+   *  share of its concepts you master (status "held"), a concept is white until mastered, then its hue. */
   colours(d) {
-    const pal = PALETTES[this.cfg.palette] || PALETTES.vivid, byCluster = {}, byCourse = {};
+    const pal = PALETTES[this.cfg.palette] || PALETTES.vivid, byCluster = {}, byCourse = this.courseColours(d);
     d.clusters.forEach((c, i) => { byCluster[c.id] = c.id === "unlinked" ? "#8a8a8a" : pal[i % pal.length]; });
-    [...new Set(d.nodes.map((n) => n.group))].sort().forEach((g, i) => { byCourse[g] = pal[(i * 3) % pal.length]; });
-    const statusCol = (s) => s === "untested" ? "#ececec" : getComputedStyle(document.documentElement).getPropertyValue(`--st-${s}`).trim();
+    const course = this.course(), off = (n) => course && n.group !== course;
+    const main = (members) => { const cnt = {}; for (const n of members) cnt[n.group] = (cnt[n.group] || 0) + 1; return Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0]; };
+    const byTopic = this.cfg.colour !== "cluster";                  // "status" (older setting) shows topics now
+    const hue = (cid, members) => course ? (members.some((n) => !off(n)) ? byCourse[course] : GREY)
+      : byTopic ? byCourse[main(members)] : byCluster[cid];
+    const mastered = (n) => n.status === "held";
     return {
-      cluster: (cid) => byCluster[cid],
-      node: (n) => this.cfg.colour === "status" ? statusCol(n.status) : this.cfg.colour === "course" ? byCourse[n.group] : byCluster[n.cluster],
+      cluster: hue,                                                  // the glow
+      share: (members) => { const mine = members.filter((n) => !off(n)); return mine.length ? mine.filter(mastered).length / mine.length : 0; },
       macro: (c, members) => {
-        if (this.cfg.colour === "status") return statusCol(URGENCY.find((s) => s !== "untested" && c.status_counts[s]) || "untested");
-        if (this.cfg.colour === "course") { const cnt = {}; for (const n of members) cnt[n.group] = (cnt[n.group] || 0) + 1; return byCourse[Object.entries(cnt).sort((a, b) => b[1] - a[1])[0][0]]; }
-        return byCluster[c.id];
+        const h = hue(c.id, members);
+        if (h === GREY) return { hue: GREY, fill: GREY };
+        const mine = members.filter((n) => !off(n));
+        return { hue: h, fill: mix(h, mine.length ? mine.filter(mastered).length / mine.length : 0) };
       },
+      node: (n) => off(n) ? { hue: GREY, fill: GREY } : (() => {
+        const h = byTopic ? byCourse[n.group] : byCluster[n.cluster];
+        return { hue: h, fill: mastered(n) ? h : WHITE };
+      })(),
     };
   },
 
@@ -317,16 +412,20 @@ const Knowledge = {
     return { items, rep, members };
   },
 
-  /** Requires edges mapped onto visible items: {target: {source: count}}; lateral pairs separately. */
-  links(d, rep) {
-    const req = {}, lat = new Map();
+  /** Requires edges mapped onto visible items: {target: {source: count}}; lateral pairs separately.
+   *  `course`: only links inside that course count; a link with one end in it goes to `out` (drawn grey). */
+  links(d, rep, course) {
+    const req = {}, lat = new Map(), out = {};
+    const grp = course ? Object.fromEntries(d.nodes.map((n) => [n.id, n.group])) : null;
     for (const e of d.edges) {
       const a = rep[e.from], b = rep[e.to];               // e.from requires e.to
       if (!a || !b || a === b) continue;
-      if (e.type === "requires") { (req[a] ||= {}); req[a][b] = (req[a][b] || 0) + 1; }
-      else { const k = [a, b].sort().join("|"); if (!lat.has(k)) lat.set(k, e.type); }
+      const inside = course ? (grp[e.from] === course) + (grp[e.to] === course) : 2;
+      if (!inside) continue;                              // another course's link: not drawn
+      if (e.type === "requires") { const T = inside === 2 ? req : out; (T[a] ||= {}); T[a][b] = (T[a][b] || 0) + 1; }
+      else if (inside === 2) { const k = [a, b].sort().join("|"); if (!lat.has(k)) lat.set(k, e.type); }
     }
-    return { req, lat: [...lat].map(([k, type]) => [...k.split("|"), type]) };
+    return { req, out, lat: [...lat].map(([k, type]) => [...k.split("|"), type]) };
   },
 
   radius(it) {
@@ -409,6 +508,33 @@ const Knowledge = {
     }
   },
 
+  /** An open cluster's glow is its territory: a CLOSED cluster (macro-node) inside it is pushed out along the line
+   *  from the glow's centre, until it clears the ellipse (the same ellipse render() draws). */
+  clearGlows(d, items, members) {
+    for (let pass = 0; pass < 8; pass++) {
+      let moved = false;
+      for (const c of d.clusters) {
+        if (!this.expanded(c.id)) continue;
+        const pts = members[c.id].map((n) => items[n.id]).filter(Boolean);
+        if (!pts.length) continue;
+        const x0 = Math.min(...pts.map((p) => p.x)), x1 = Math.max(...pts.map((p) => p.x));
+        const y0 = Math.min(...pts.map((p) => p.y)), y1 = Math.max(...pts.map((p) => p.y));
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = (x1 - x0) / 2 + 110, ry = (y1 - y0) / 2 + 80;
+        for (const it of Object.values(items)) {
+          if (it.kind !== "macro" || it.cluster.id === c.id) continue;
+          const r = this.radius(it) + 12;
+          let dx = it.x - cx, dy = it.y - cy;
+          if (((dx) / (rx + r)) ** 2 + ((dy) / (ry + r)) ** 2 >= 1) continue;
+          if (Math.abs(dx) + Math.abs(dy) < 1e-6) { dx = 0; dy = -1; }
+          const k = 1 / Math.sqrt((dx / (rx + r)) ** 2 + (dy / (ry + r)) ** 2);   // scale onto the ellipse
+          it.x = cx + dx * k * 1.02; it.y = cy + dy * k * 1.02;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+  },
+
   /** Force layout ("physics"): deterministic — starts from the layered positions, fixed iterations, no randomness. */
   simulate(items, req, lat) {
     const c = this.cfg, list = Object.values(items), N = list.length;
@@ -462,6 +588,7 @@ const Knowledge = {
     if (cfg.shape === "force") this.simulate(items, req, G.state.lateral ? lat : []);
     this.collide(items, cfg.shape !== "force" && cfg.detail !== "all");
     this.clearTitles(d, items, members);
+    this.clearGlows(d, items, members);
     this.cache = { data: d, key, items, rep, members, req, lat };
     return this.cache;
   },
@@ -478,7 +605,10 @@ const Knowledge = {
   /** Draw from the cached geometry plus the learner's drags. */
   render(G) {
     const d = G.state.data, wrap = G.els.wrap, cfg = this.cfg, geo = this.cache;
-    const { rep, members, req, lat } = geo;
+    const { rep, members } = geo;
+    // links for the coloured course only (the layout itself never depends on it, so nothing moves)
+    const course = this.course(), off = (n) => course && n.group !== course;
+    const { req, lat, out } = course ? this.links(d, rep, course) : { req: geo.req, lat: geo.lat, out: {} };
     G.dims = { w: 0, h: 0 };
     const items = {};
     const clusterOf = (it) => it.kind === "macro" ? it.cluster.id : it.node.cluster;
@@ -491,6 +621,7 @@ const Knowledge = {
       // touches (other concepts, cluster nodes) is pushed aside; open clusters' titles are obstacles too.
       const held = this.lastDragged, pinned = new Set(Object.keys(items).filter((k) => clusterOf(items[k]) === held));
       this.collide(items, false, pinned, this.titleBoxes(d, items, members));
+      this.clearGlows(d, items, members);
     }
     const col = this.colours(d);
     const keepDrawer = wrap.querySelector(".drawer");
@@ -508,7 +639,7 @@ const Knowledge = {
     const glows = svg("g"), names = svg("g");
     this.openAreas = [];
     d.clusters.forEach((c, i) => {
-      const colour = col.cluster(c.id);
+      const colour = col.cluster(c.id, members[c.id]);
       const pts = this.expanded(c.id) ? members[c.id].map((n) => items[n.id]) : [items["C:" + c.id]];
       const x0 = Math.min(...pts.map((p) => p.x)), x1 = Math.max(...pts.map((p) => p.x));
       const y0 = Math.min(...pts.map((p) => p.y)), y1 = Math.max(...pts.map((p) => p.y));
@@ -568,7 +699,14 @@ const Knowledge = {
       }
     }
     if (G.state.lateral) for (const [a, b, type] of lat) if (items[a] && items[b]) line(items[a], items[b], "lateral", { kind: "lateral", type, keys: [a, b] }, 1, false);
-    g.append(edgeLayer, hitLayer, names);
+    // one course coloured: its links to other courses stay as faint grey hints (not clickable)
+    const greyLayer = svg("g");
+    for (const [t, ss] of Object.entries(out)) for (const s of Object.keys(ss)) {
+      if (!items[t] || !items[s]) continue;
+      const p = trim(items[s], items[t], this.radius(items[t]));
+      greyLayer.append(svg("line", { class: "kedge offcourse", x1: items[s].x, y1: items[s].y, x2: p.x, y2: p.y }));
+    }
+    g.append(greyLayer, edgeLayer, hitLayer, names);
 
     // nodes
     G.nodeEls = {}; G.pos = {};
@@ -583,30 +721,41 @@ const Knowledge = {
       const rr = this.radius(it);
       const ng = svg("g", { class: `node ${it.kind === "macro" ? "macro" : "dot"}`, transform: `translate(${it.x},${it.y})`, style: "cursor:pointer" });
       if (it.kind === "macro") {
-        const c = it.cluster, colour = col.macro(c, members[c.id]);
-        ng.append(svg("circle", { r: rr + 10, class: "hit" }), svg("circle", { r: rr, fill: colour, "fill-opacity": 0.85, stroke: colour, "stroke-width": 2 }));
-        const held = (c.status_counts.held || 0) / c.size;           // progress ring: share of held concepts
-        if (held > 0) ng.append(svg("circle", { r: rr + 4, class: "ring", "stroke-dasharray": `${2 * Math.PI * (rr + 4) * held} 9999`, transform: "rotate(-90)" }));
-        const num = svg("text", { class: "count", "text-anchor": "middle", y: 4 * cfg.labelSize, style: `font-size:${12 * cfg.labelSize}px` }); num.textContent = c.size; ng.append(num);
+        const c = it.cluster, mc = col.macro(c, members[c.id]), share = col.share(members[c.id]);
+        const mine = course ? members[c.id].filter((n) => !off(n)).length : c.size;   // this topic's concepts in it
+        if (course && !mine) ng.classList.add("off");
+        // fill = mastery (white -> full topic colour), ring = the topic colour
+        ng.append(svg("circle", { r: rr + 10, class: "hit" }), svg("circle", { r: rr, fill: mc.fill, stroke: mc.hue, "stroke-width": 2.5 }));
+        const num = svg("text", { class: "count", "text-anchor": "middle", y: 4 * cfg.labelSize,
+          style: `font-size:${12 * cfg.labelSize}px;fill:${share > 0.55 && mc.hue !== GREY ? "#fff" : "#222"}` });
+        num.textContent = course && mine !== c.size ? `${mine}/${c.size}` : c.size; ng.append(num);
         const t = svg("text", { class: "mlabel", "text-anchor": "middle", y: rr + 18 * cfg.labelSize, style: `font-size:${13 * cfg.labelSize}px` }); t.textContent = c.name; ng.append(t);
         ng.addEventListener("pointerdown", (ev) => this.startDrag(ev, G, c.id));
         ng.addEventListener("click", (ev) => { ev.stopPropagation(); card.style.display = "none"; if (this.justDragged) return; this.open.add(c.id); this.redrawAround(G, c.id); });
         ng.addEventListener("mouseenter", () => {
           this.highlight(it.key);
-          showCard(ng, [el("b", {}, c.name), el("div", { class: "muted" }, `${c.size} concepts · click to open · drag to move`),
+          const tt = (d.group_titles || {})[course] || course;
+          const cards = members[c.id].reduce((s, n) => s + ((G.state.cards || {})[n.id] || 0), 0);
+          showCard(ng, [el("b", {}, c.name), el("div", { class: "muted" }, `${course ? `${mine} of ${c.size} concepts in ${tt}` : `${c.size} concepts`}${cards ? ` · ${cards} cards` : ""} · click to open · drag to move`),
             el("div", {}, "Foundations: " + c.foundations.join(", ")),
             el("div", { class: "row" }, ...URGENCY.filter((s) => c.status_counts[s]).map((s) => el("span", {}, pill(s), ` ${c.status_counts[s]}`)))]);
         });
       } else {
-        const n = it.node;
-        ng.append(svg("circle", { r: Math.max(9, rr + 4), class: "hit" }), svg("circle", { r: rr, fill: col.node(n) }));
+        const n = it.node, nc = col.node(n);
+        if (off(n)) ng.classList.add("off");
+        // mastered: the topic colour; otherwise white — both with a soft glow in the topic colour
+        ng.append(svg("circle", { r: rr * 2.6, fill: nc.hue, "fill-opacity": 0.22 * cfg.glow, class: "halo" }),
+          svg("circle", { r: Math.max(9, rr + 4), class: "hit" }), svg("circle", { r: rr, fill: nc.fill, stroke: nc.hue, "stroke-width": 1 }));
         const t = svg("text", { y: rr + 12 * cfg.labelSize, "text-anchor": "middle", style: `font-size:${9.5 * cfg.labelSize}px` });
         t.textContent = n.name.length > 21 ? n.name.slice(0, 20) + "…" : n.name; ng.append(t);
         ng.addEventListener("click", (ev) => { ev.stopPropagation(); card.style.display = "none"; G.select(n.id); });
         ng.addEventListener("mouseenter", () => {
           this.highlight(it.key);
           const cl = d.clusters.find((c) => c.id === n.cluster);
-          showCard(ng, [el("b", {}, n.name), n.summary ? mdEl(n.summary, "kcard-text") : "", el("div", { class: "muted" }, pill(n.status), ` ${cl ? cl.name : ""} · ${n.group}`)]);
+          const nc = (G.state.cards || {})[n.id] || 0;
+          showCard(ng, [el("b", {}, n.name), n.summary ? mdEl(n.summary, "kcard-text") : "", el("div", { class: "muted" }, pill(n.status),
+            ` ${n.kind || ""} · ${cl ? cl.name : ""} · ${(d.group_titles || {})[n.group] || n.group}`,
+            G.state.cardsOk === false ? "" : ` · ${nc} card${nc === 1 ? "" : "s"}`)]);
         });
       }
       ng.addEventListener("mouseleave", () => { this.highlight(null); card.style.display = "none"; });
@@ -737,7 +886,8 @@ const Knowledge = {
     const goal = goalBox("Goal / scope (optional): e.g. theory only, exam on 12 June");
     let acts;
     const picker = levelPicker(() => acts.refresh());
-    acts = messageActions(() => ({ cluster: cid, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value,
+    const grill = grillBox(true, () => acts.refresh());               // a whole cluster: pin the goal down first
+    acts = messageActions(() => ({ cluster: cid, level: picker.value, goal: goal.value.trim(), grill: grill.value() }), "/teach-message", "/teach", () => !!picker.value,
       "Prepare lecture");
     const link = (x) => el("a", { onclick: () => { this.reveal(G, x.id); G.select(x.id); } }, x.name);
     dr.replaceChildren(
@@ -745,7 +895,7 @@ const Knowledge = {
       el("h3", {}, c.name),
       el("div", { class: "row" }, ...URGENCY.filter((s) => c.status_counts[s]).map((s) => el("span", {}, pill(s), ` ${c.status_counts[s]}`))),
       el("div", { class: "muted" }, `${c.size} concepts · ${c.courses.join(", ")}`),
-      el("h4", {}, "How well do you know it?"), picker.el, goal,
+      el("h4", {}, "How well do you know it?"), picker.el, goal, grill.el,
       el("div", { class: "row" }, acts.send, acts.show, acts.copy), acts.out, acts.msgBox,
       c.outside.length ? el("h4", {}, `Prerequisites from other clusters (${c.outside.length})`) : "",
       c.outside.length ? el("ul", { class: "links" }, ...c.outside.map((x) => el("li", {}, pill(x.status), link(x), el("span", { class: "muted" }, ` · ${x.cluster}`)))) : "",
@@ -797,7 +947,7 @@ const Knowledge = {
       row("Gravity", slider("gravity", 0, 3, 0.1, force)),
       row("Direction pull", slider("direction", 0, 3, 0.1, force)),
       el("h4", {}, "Colours"),
-      row("Colour by", select("colour", [["cluster", "Cluster"], ["status", "Learner status"], ["course", "Course"]])),
+      row("Colour by", select("colour", [["course", "Macro topic"], ["cluster", "Cluster"]])),
       row("Palette", select("palette", [["vivid", "Vivid"], ["pastel", "Pastel"], ["mono", "Mono"]])),
       row("Glow", slider("glow", 0, 1, 0.05)),
       el("h4", {}, "Size"),

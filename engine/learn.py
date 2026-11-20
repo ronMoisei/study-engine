@@ -45,8 +45,13 @@ def level_of(value):
     return lv
 
 
-def header(level, goal):
-    lines = []
+GRILL = ("Grill me first: use the `grill-me` skill — one question at a time, pin down my goal contract (deliverable, "
+         "the material's tasks in scope, depth, what I already have, what is OUT of scope) and get my yes before any "
+         "plan. The contract then binds the plan: every step serves an in-scope task.")
+
+
+def header(level, goal, grill=False):
+    lines = [GRILL] if grill else []
     if level:
         meaning, phase, skill, _ = LEVELS[level]
         lines.append(f"Self-rated level: **{level}/5 — {meaning}** → phase `{phase}` (skill: {skill}).")
@@ -135,7 +140,7 @@ def rel_to(cfg, p):
         return str(p)
 
 
-def material_message(cfg, path, level, goal, graph_nodes=None):
+def material_message(cfg, path, level, goal, graph_nodes=None, grill=False):
     """Start learning from a file / folder / course that may not be in the graph yet."""
     path = Path(path)
     course = course_of(cfg, path)
@@ -143,7 +148,7 @@ def material_message(cfg, path, level, goal, graph_nodes=None):
         ("folder" if path.is_dir() else "file")
     lines = ["Use the `learning-harness` skill.",
              f"Topic: the {what} `{rel_to(cfg, path)}`" + (f" (course **{course}**)" if course and what != "course" else "") + "."]
-    lines += header(level, goal)
+    lines += header(level, goal, grill)
     if path.is_dir():
         files = material_files(cfg, path)
         lines += ["", f"Readable material there ({len(files)} files; read them yourself, don't ask me to paste):"]
@@ -157,11 +162,11 @@ def material_message(cfg, path, level, goal, graph_nodes=None):
     return "\n".join(x for x in lines if x is not None)
 
 
-def topic_message(level, goal, topic, related=None):
+def topic_message(level, goal, topic, related=None, grill=False):
     """Start learning a topic that is neither a graph node nor a path: plain words."""
     lines = ["Use the `learning-harness` skill.", f"Topic: **{topic.strip()}**" if topic.strip() else
              "Topic: see my goal below."]
-    lines += header(level, goal)
+    lines += header(level, goal, grill)
     if related:
         lines += ["", "Possibly related concepts already in the study graph:"]
         lines += [f"- {n['name']} (`{n['id']}`) — {n['status']}" for n in related]

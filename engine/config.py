@@ -38,13 +38,24 @@ class Config:
         "consolidate": "agy:gemini-4-argon-medium",   # a course's drafts -> chapters, duplicates (once per course)
         "link": "agy:gemini-4-argon-medium",          # one lecture's full notes -> prerequisite links with reasons
         "narrate": "agy:gemini-4-hydrogen-low",       # Create raw notes: one short progress update per lecture
+        # Sync Knowledge v5 (engine/lecturesync.py): raw notes -> typed atomic notes + easy cards; medium exercises
+        "notes": "agy:gemini-4-hydrogen-high",
+        "exercises": "agy:gemini-4-hydrogen-high",
+        "reconcile": "agy:gemini-4-hydrogen-medium",  # a draft vs the notes it may repeat: integrate/skip/sub/new
+        # one-time move to the flat, topic-organised graph (engine/migrate.py)
+        "split": "agy:gemini-4-hydrogen-medium",      # an older rich atomic note -> typed atomic notes
+        "taxonomy": "agy:gemini-4-argon-medium",      # every note's title -> macro topics and subtopics
+        "assign": "agy:gemini-4-argon-medium",        # notes -> their topics (and a kind where it changed)
+        "dedupe": "agy:gemini-4-argon-medium",        # notes of one subtopic -> the ones that are the same concept
     })
     # "v4": polish -> atomize -> course graph (Sync Knowledge); "v3": structure -> write -> organize per file;
     # "v2": extract -> group -> relate. Analysing a single file in the Inbox always uses the per-file pipeline.
-    ingest_method: str = "v4"
+    ingest_method: str = "v5"                    # v5: raw notes -> notes + cards -> graph by code (lecturesync)
     sync_workers: int = 3                       # lectures polished/atomized in parallel during a Sync
     job_timeout_s: dict = field(default_factory=lambda: {"polish": 900, "atomize": 420, "consolidate": 600,
-                                                          "link": 600})
+                                                          "link": 600, "split": 600, "taxonomy": 900, "assign": 600,
+                                                          "dedupe": 600, "notes": 1200, "exercises": 900,
+                                                          "reconcile": 600})
     # Stage 1 (offline lecture pipeline) on THIS PC — set in %LOCALAPPDATA%/study-engine/pc.json, never synced
     lecture_pipeline: str = ""                  # folder holding the pipeline's ingest.py
     lecture_python: str = ""                    # its Python (CUDA, Whisper)
@@ -124,6 +135,35 @@ def _workspace_above(start: Path):
         if (p / "Material").is_dir() and (p / "Agents").is_dir():
             return p
     return None
+
+
+# The pipeline steps whose model the Sync tab lets you choose, and the models agy offers (`agy models`).
+PIPELINE_JOBS = {"notes": "Atomic notes + easy cards", "exercises": "Medium exercises",
+                 "reconcile": "Repeat check (integrate / skip)", "narrate": "Raw-notes progress updates"}
+AGY_MODELS = ["gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low",
+              "gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
+              "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+              "claude-opus-5-5-high", "claude-opus-5-5-medium", "claude-opus-5-5-low",
+              "claude-sonnet-5-5-high", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-low", "gpt-oss-120b-medium"]
+
+
+def save_shared_models(cfg, changes):
+    """Set models for pipeline jobs in the synced settings (.study/settings.json, every PC) and in `cfg`."""
+    bad = [j for j in changes if j not in PIPELINE_JOBS]
+    bad += [m for m in changes.values() if m.split(":", 1)[-1] not in AGY_MODELS]
+    if bad:
+        raise ValueError(f"unknown job or model: {bad}")
+    f = cfg.shared_dir / "settings.json"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    want = {j: m if ":" in m else f"agy:{m}" for j, m in changes.items()}
+    data["models"] = {**data.get("models", {}), **want}
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    cfg.models.update(want)
+    return {j: cfg.models[j] for j in PIPELINE_JOBS}
 
 
 # Settings that must be the same on every PC live in the synced workspace, not in a per-PC config.json.

@@ -92,6 +92,8 @@ def _chars(cfg, rel):
 def estimate(cfg, courses, rebuild=()):
     """Per course: lectures to transcribe (stage 1) and the cloud calls stages 2-4 would make."""
     inv = {r["course"]: r for r in knowledge_sync.inventory(cfg)["courses"]}
+    if cfg.ingest_method == "v5":
+        return _estimate_v5(cfg, inv, courses, set(rebuild))
     if cfg.ingest_method == "v4":
         return _estimate_v4(cfg, inv, courses, set(rebuild))
     out, total = [], {"files": 0, "structure": 0, "write": 0, "relate": 0, "transcribe": 0}
@@ -151,11 +153,13 @@ def _estimate_v4(cfg, inv, courses, rebuild):
 
 # ── a run ──
 
-def run(cfg, store, llm, embedder, courses, transcribe=True, progress=None, stop=None, rebuild=()):
+def run(cfg, store, llm, embedder, courses, transcribe=True, progress=None, stop=None, rebuild=(), limit=None):
     """Run Sync for `courses`. progress(dict) gets updates; stop() -> True ends the run between files.
-    rebuild: courses whose every lecture is processed again (v4). The report is also saved to .study/sync/."""
+    rebuild: courses whose every lecture is processed again. limit (v5): only the first N lectures of each course
+    (a test run). The report is also saved to .study/sync/."""
     report = {"courses": [], "proposals": [], "errors": [], "transcribed": [], "waiting": [],
-              "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "method": cfg.ingest_method, "rebuild": list(rebuild)}
+              "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "method": cfg.ingest_method, "rebuild": list(rebuild),
+              "limit": limit}
     say = progress or (lambda d: None)
     acquire(cfg)
     try:
@@ -199,6 +203,11 @@ def _run(cfg, store, llm, embedder, courses, transcribe, say, stop, rebuild, rep
                                             f"{(r.stderr or r.stdout).strip()[-300:]}")
                 report["transcribed"].append(c)
                 row = {x["course"]: x for x in knowledge_sync.inventory(cfg)["courses"]}[c]
+        if cfg.ingest_method == "v5":
+            if _course_v5(cfg, store, llm, c, row, say, stop, c in rebuild, report, limit=report.get("limit"),
+                          embedder=embedder):
+                return report
+            continue
         if cfg.ingest_method == "v4":
             if _course_v4(cfg, store, llm, embedder, c, row, say, stop, c in rebuild, report):
                 return report
@@ -222,6 +231,57 @@ def _run(cfg, store, llm, embedder, courses, transcribe, say, stop, rebuild, rep
                 report["errors"].append(f"{rel}: {type(e).__name__}: {e}")
         report["courses"].append(c)
     return report
+
+
+def _course_v5(cfg, store, llm, c, row, say, stop, rebuild, report, limit=None, embedder=None):
+    """v5 for one course: notes + easy cards and exercises per lecture (Hydrogen high), then the graph by code.
+    `limit`: only the first N lectures (a test run). -> True when the run was stopped."""
+    from . import lecturesync
+    files = sorted(_files(row, rebuild), key=coursesync.lecture_key)[:limit or None]
+    if not files:
+        return False
+    if embedder is not None and cfg.provider != "stub":    # the repeat check compares meanings with embeddings
+        from .rawnotes import start_ollama
+        if not start_ollama(cfg, wait_s=20):
+            embedder = None                                # words only
+    st, errors = lecturesync.prepare_all(cfg, store, llm, c, files, say, stop, embedder=embedder)
+    report["errors"] += errors
+    if stop and stop():
+        report["stopped"] = True
+        report["waiting"].append({"course": c, "reason": "stopped before every lecture was ready: run Sync again "
+                                  "to finish (finished lectures are kept)"})
+        return True
+    if errors:
+        report["waiting"].append({"course": c, "reason": f"{len(errors)} lectures failed; the course's proposal is "
+                                  "built once every lecture has its notes: run Sync again"})
+        return False
+    say({"course": c, "stage": "graph", "done": len(files), "total": len(files)})
+    p = lecturesync.build(cfg, c, files, st)
+    report["proposals"].append(p["id"])
+    report["courses"].append(c)
+    return False
+
+
+def _estimate_v5(cfg, inv, courses, rebuild):
+    from . import lecturesync
+    out, total = [], {"files": 0, "prepared": 0, "notes": 0, "exercises": 0, "transcribe": 0}
+    for c in courses:
+        row = inv.get(c)
+        if not row:
+            continue
+        files = _files(row, c in rebuild)
+        st = lecturesync.load_state(cfg, c)
+        todo = [f for f in files if (st["lectures"].get(f) or {}).get("notes") is None]
+        e = {"course": c, "files": len(files), "prepared": len(files) - len(todo), "rebuild": c in rebuild,
+             "transcribe": len(row["to_transcribe"]),
+             "notes": sum(max(1, math.ceil(_chars(cfg, f) / lecturesync.LECTURE_CHARS)) for f in todo),
+             "exercises": len(todo), "retires": 0}
+        out.append(e)
+        for k in total:
+            total[k] += e[k]
+    total["calls"] = total["notes"] + total["exercises"]
+    return {"method": "v5", "courses": out, "total": total, "stage1_available": lecture_pipeline(cfg) is not None,
+            "workers": cfg.sync_workers, "models": {k: cfg.models.get(k) for k in ("notes", "exercises")}}
 
 
 def _course_v4(cfg, store, llm, embedder, c, row, say, stop, rebuild, report):

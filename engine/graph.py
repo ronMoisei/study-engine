@@ -1,8 +1,9 @@
 """The node index, built from markdown (the notes are the source of truth; this is derived and rebuildable).
 
-Two kinds of node
-  Graph/<domain>/<slug>.md      writable proposition notes (schema: Agents/skills/knowledge-graph)
-  Material/<course>/Atomic Notes/<slug>.md   read-only course atomic notes (process-material pipeline)
+Nodes
+  Graph/<slug>.md               atomic notes, one flat folder (format: engine/notes.py); Graph/_topics.md is the
+                                shared topic list. Notes still in Graph/<domain>/ (format v2) are read the same way.
+  Material/<course>/…/Atomic Notes/<slug>.md   older read-only course atomic notes, until they are migrated
 
 Edge direction: an edge (a, pred, b) is written in note `a` and points at what `a` rests on.
 Vertical predicates form the prerequisite DAG; the rest are lateral.
@@ -15,7 +16,10 @@ from pathlib import Path
 
 VERTICAL = {"requires", "derived_from", "instantiates", "interprets_via"}
 LATERAL = {"contrasts_with", "analogue_of", "constrained_by", "implemented_via", "bottleneck_solved_by"}
-KINDS = ["definition", "theorem", "mechanism", "constraint", "heuristic", "application"]
+# atomic note kinds, each with a fixed shape (engine/notes.py). "constraint" (v2) folds into theorem conditions or
+# pitfalls when notes are migrated.
+KINDS = ["definition", "theorem", "algorithm", "mechanism", "pitfall", "application", "heuristic"]
+LEGACY_KINDS = {"constraint"}
 PRED_RE = re.compile(r"^\s*[-*]?\s*([a-z_]+)::\s*(.+)$")
 LINK_RE = re.compile(r"\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
 
@@ -37,8 +41,9 @@ class Node:
     sources: list = field(default_factory=list)
     pos: tuple | None = None                           # (sequence, ordinal): order of first appearance
     is_concept: bool = False
-    prerequisite_of: list = field(default_factory=list)   # ids that require this node (stored here)
-    course: str = ""                                   # Material/<course> folder this node belongs to ("" = none)
+    prerequisite_of: list = field(default_factory=list)   # ids that require this node (v2 notes only)
+    course: str = ""                                   # course its sources come from ("" = none); never stored
+    topics: list = field(default_factory=list)         # ["macro/sub"]: `domain` = first macro, `topic` = its sub
 
     @property
     def text(self):
@@ -126,10 +131,11 @@ def _concept_note(path):
     from .notes import parse_concept
     c = parse_concept(path.read_text(encoding="utf-8"))
     edges = [("requires", t) for t in c["requires"]] + [tuple(r) for r in c["related"]]
+    macro, _, sub = c["topics"][0].partition("/") if c["topics"] else ("", "", "")
     return Node(id=path.stem, name=c["title"] or path.stem, statement=c["definition"], kind=c["kind"] or "",
-                domain=c["domain"] or "", aliases=c["aliases"], path=path, edges=edges, topic=c["topic"] or "",
+                domain=macro or c["domain"], aliases=c["aliases"], path=path, edges=edges, topic=sub or c["topic"],
                 propositions=c["propositions"], sources=c["sources"], is_concept=True,
-                prerequisite_of=c["prerequisite_of"], course=c.get("course") or "",
+                prerequisite_of=c["prerequisite_of"], course=c.get("course") or "", topics=c["topics"],
                 pos=position_of_anchor(c["sources"][0]) if c["sources"] else None)
 
 def _graph_note(path):

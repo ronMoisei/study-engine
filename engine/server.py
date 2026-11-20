@@ -13,10 +13,15 @@ GET  /courses                                 course folders in Material/
 POST /knowledge/raw-notes {courses}          Create raw notes: offline lecture pipeline on this PC for the ticked
                                                  courses that have new recordings (background)
 GET  /knowledge/raw-notes[?preview=1]         that run's progress and updates (+ what a run would do)
+GET  /anki/counts[?fresh=1]                   cards per graph node over every deck (lh:: tag), cached 5 min
+GET  /settings/models   POST {job: model}     the model of each pipeline step (synced settings, every PC)
+GET  /settings/view     POST {…}              the graph's view settings (.study/view.json)
+GET  /plans[?all=1]                           study plans with their steps done / current / to do (Teach tab)
 POST /knowledge/raw-notes/stop
 GET  /sync[?recheck=1]                        this PC's setup (launcher, MCP servers, deps, deploy); recheck repairs
 GET  /proposals                               GET /proposals/<id>
-POST /proposals/<id>/apply {accept, reject}   write approved items to the vault
+POST /proposals/<id>/apply {accept, reject, reject_cards}   write approved items; send their cards to Anki
+POST /proposals/<id>/cards                    send the approved items' pending cards again
 POST /proposals/<id>/plan                     build the study plan note
 POST /proposals/<id>/discard
 GET  /graph?group=&focus=&around=1            laid-out prerequisite graph with learner status
@@ -69,6 +74,18 @@ class Engine:
         self.ingest_lock = threading.Lock()
         self.sync_report = None               # devicesync.check() result for this PC
         self.raw_run = None                   # rawnotes.RawNotesRun: "Create raw notes" (the last one, kept for the panel)
+
+    def card_counts(self, fresh=False):
+        """Cards per graph node over every Anki deck (by `lh::` tag); cached 5 minutes. Anki closed -> ok False."""
+        import time
+        c = getattr(self, "_counts", None)
+        if c and not fresh and time.time() - c["at"] < 300:
+            return c
+        try:
+            self._counts = {"ok": True, "counts": self.anki.card_counts(), "at": time.time()}
+        except AnkiError as e:
+            return {"ok": False, "counts": (c or {}).get("counts", {}), "error": str(e), "at": time.time()}
+        return self._counts
 
     def start_raw_notes(self, courses):
         """The offline lecture pipeline on this PC for the ticked courses, in the background; poll
@@ -147,7 +164,7 @@ class Engine:
         threading.Thread(target=work, daemon=True).start()
         return job
 
-    def start_sync(self, courses, transcribe=True, rebuild=()):
+    def start_sync(self, courses, transcribe=True, rebuild=(), limit=None):
         """Sync Knowledge for the chosen courses, in the background; poll /jobs/<id>."""
         import time
         import uuid
@@ -165,7 +182,8 @@ class Engine:
                 with self.ingest_lock:
                     job["report"] = syncrun.run(self.cfg, self.store, self.llm, self.embedder, courses, transcribe,
                                                 progress=lambda d: job.update(progress=d), stop=lambda: job["stop"],
-                                                rebuild=[c for c in rebuild if c in courses])
+                                                rebuild=[c for c in rebuild if c in courses],
+                                                limit=int(limit) if limit else None)
                 job.update(state="done")
             except Exception as e:  # noqa: BLE001
                 job.update(state="error", error=f"{type(e).__name__}: {e}")
@@ -243,22 +261,22 @@ def make_handler(engine, token=None):
                 if method == "GET" and path == "/teach-message":
                     if q("cluster"):
                         return self._send(200, {"message": graphview.cluster_message(engine.cfg, q("cluster"),
-                                                                                     q("level"), q("goal"))})
+                                                                                     q("level"), q("goal"), bool(q("grill")))})
                     return self._send(200, {"message": graphview.teach_message(engine.cfg, q("id", ""), q("level"),
-                                                                               q("goal"))})
+                                                                               q("goal"), bool(q("grill")))})
                 if method == "GET" and path == "/learn-message":
                     return self._send(200, {"message": graphview.learn_message(engine.cfg, q("target", ""),
-                                                                               q("level"), q("goal"))})
+                                                                               q("level"), q("goal"), bool(q("grill")))})
                 if method == "GET" and path == "/courses":
                     return self._send(200, {"courses": learn.courses(engine.cfg)})
                 if method == "POST" and path in ("/teach", "/learn"):
                     b = self._body()
                     if path == "/learn":
-                        msg = graphview.learn_message(engine.cfg, b.get("target", ""), b.get("level"), b.get("goal"))
+                        msg = graphview.learn_message(engine.cfg, b.get("target", ""), b.get("level"), b.get("goal"), bool(b.get("grill")))
                     elif b.get("cluster"):
-                        msg = graphview.cluster_message(engine.cfg, b["cluster"], b.get("level"), b.get("goal"))
+                        msg = graphview.cluster_message(engine.cfg, b["cluster"], b.get("level"), b.get("goal"), bool(b.get("grill")))
                     else:
-                        msg = graphview.teach_message(engine.cfg, b.get("id", ""), b.get("level"), b.get("goal"))
+                        msg = graphview.teach_message(engine.cfg, b.get("id", ""), b.get("level"), b.get("goal"), bool(b.get("grill")))
                     if b.get("conversationId"):
                         out = sidecar.send_message(b["conversationId"], msg)
                         return self._send(200, {"sent_to": b["conversationId"], "result": out, "message": msg})
@@ -268,6 +286,30 @@ def make_handler(engine, token=None):
                                             "project": project, "note": note})
                 if method == "GET" and path == "/health":
                     return self._send(200, engine.health())
+                if path == "/settings/view":               # the graph's settings (the panel's port changes each start,
+                    f = engine.cfg.shared_dir / "view.json"  # so browser storage forgets them): kept here, every PC
+                    if method == "POST":
+                        b = self._body()
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.write_text(json.dumps(b if isinstance(b, dict) else {}, ensure_ascii=False, indent=1),
+                                     encoding="utf-8")
+                        return self._send(200, {"saved": True})
+                    try:
+                        return self._send(200, json.loads(f.read_text(encoding="utf-8")))
+                    except (OSError, ValueError):
+                        return self._send(200, {})
+                if method == "GET" and path == "/settings/models":
+                    from . import config as config_mod
+                    return self._send(200, {"jobs": config_mod.PIPELINE_JOBS, "options": config_mod.AGY_MODELS,
+                                            "models": {j: engine.cfg.models.get(j, "") for j in config_mod.PIPELINE_JOBS}})
+                if method == "POST" and path == "/settings/models":
+                    from . import config as config_mod
+                    return self._send(200, {"models": config_mod.save_shared_models(engine.cfg, self._body())})
+                if method == "GET" and path == "/plans":
+                    from . import plans
+                    return self._send(200, {"plans": plans.list_plans(engine.cfg, bool(q("all")))})
+                if method == "GET" and path == "/anki/counts":
+                    return self._send(200, engine.card_counts(bool(q("fresh"))))
                 if method == "GET" and path == "/knowledge/inventory":
                     from . import knowledge_sync
                     return self._send(200, knowledge_sync.inventory(engine.cfg))
@@ -278,7 +320,7 @@ def make_handler(engine, token=None):
                 if method == "POST" and path == "/knowledge/sync":
                     b = self._body()
                     return self._send(200, engine.start_sync(b.get("courses") or [], bool(b.get("transcribe", True)),
-                                                                b.get("rebuild") or []))
+                                                                b.get("rebuild") or [], b.get("limit")))
                 if method == "GET" and path == "/knowledge/raw-notes":
                     from . import rawnotes
                     return self._send(200, {"preview": rawnotes.preview(engine.cfg) if q("preview") else None,
@@ -322,6 +364,11 @@ def make_handler(engine, token=None):
                     return self._send(200, job) if job else self._send(404, {"error": "unknown job"})
                 if method == "GET" and path == "/proposals":
                     return self._send(200, {"proposals": ingest_mod.list_proposals(engine.cfg)})
+                m = re.fullmatch(r"/proposals/([\w-]+)/cards", path)
+                if m and method == "POST":                 # send the approved notes' cards again (Anki was closed)
+                    with engine.lock:
+                        p = ingest_mod.load(engine.cfg, m.group(1))
+                        return self._send(200, ingest_mod.send_cards(engine.cfg, p, engine.anki))
                 m = re.fullmatch(r"/proposals/([\w-]+)(?:/(apply|plan|discard|conflicts))?", path)
                 if m:
                     pid, act = m.group(1), m.group(2)
@@ -332,7 +379,7 @@ def make_handler(engine, token=None):
                         b = self._body()
                         with engine.lock:
                             out = ingest_mod.apply(engine.cfg, pid, b.get("accept"), b.get("reject"),
-                                                   b.get("reject_edges"), b.get("accept_edges"))
+                                                   b.get("reject_edges"), b.get("accept_edges"), b.get("reject_cards"))
                             out["retired_atomic_courses"] = syncrun.update_rederived(engine.cfg)
                             return self._send(200, out)
                     if method == "POST" and act == "conflicts":

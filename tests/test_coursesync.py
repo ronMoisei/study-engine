@@ -150,8 +150,8 @@ class CourseGraph(unittest.TestCase):
         moved = list((cfg.shared_dir / "retired" / p["id"]).rglob("*.md"))
         self.assertEqual(len(moved), 3)                                    # kept, not deleted
         g = G.Graph.load(cfg)
-        self.assertEqual({i for i, n in g.nodes.items() if n.course == c.name},
-                         old | {"learning_rate_schedule"})                  # same ids written again; session note kept
+        self.assertEqual({i for i, n in g.nodes.items() if n.course == c.name}, old)   # same ids written again
+        self.assertIn("learning_rate_schedule", g.nodes)                              # the session note is kept
         self.assertIn(c.name, json.loads((cfg.shared_dir / "rederived.json").read_text(encoding="utf-8")))
 
 
@@ -195,7 +195,7 @@ class CourseView(unittest.TestCase):
                        "definition": f"Concept number {k} of the course.", "propositions": [], "requires": [],
                        "prerequisite_of": [], "related": [], "sources": []}
             (dom / f"c{k:02d}.md").write_text(notes.render_concept(notes_c), encoding="utf-8")
-        d = graphview.graph_payload(cfg, group=c.name)
+        d = graphview.graph_payload(cfg, group="optimization")     # notes carry no course: grouped by macro topic
         xs = {n["x"] for n in d["nodes"]}
         self.assertLessEqual(len(xs), graphview.COURSE_ROW)
         self.assertEqual([s["id"] for s in d["sections"]], ["basics"])

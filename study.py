@@ -310,7 +310,7 @@ def propose_cli(cfg, path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["serve", "review", "decks", "install-plugin", "install-sidecar", "deploy", "calls",
-                                    "ingest", "proposals", "show", "approve", "plan", "propose", "sync"])
+                                    "ingest", "proposals", "show", "approve", "plan", "propose", "sync", "anki-retag"])
     ap.add_argument("target", nargs="?", help="file for ingest; proposal id for show/approve/plan")
     ap.add_argument("--domain", help="topic folder for new notes, e.g. deep-nlp (default: from the course)")
     ap.add_argument("--course", help="ingest: the Material course the concepts belong to (a unique part of its name)")
@@ -341,6 +341,18 @@ def main():
         return show_calls(cfg, a.last)
     if a.cmd == "propose":
         return propose_cli(cfg, a.target)
+    if a.cmd == "anki-retag":                # existing cards: lh:: + the node's topics only (--dry-run: report)
+        import json as _json
+        from engine import ankiretag
+        from engine.anki import Anki
+        r = ankiretag.retag(cfg, Anki(cfg.anki_url), dry_run=a.dry_run)
+        print(f"{r['notes']} Anki notes: {r['changed']} {'would change' if a.dry_run else 'changed'}, "
+              f"{r['unchanged']} already right, skipped: {r['skipped']}")
+        for e in r["examples"]:
+            print("  ", _json.dumps(e, ensure_ascii=False))
+        if r["orphans"]:
+            print("   nodes not in the graph:", ", ".join(r["orphans"][:20]))
+        return
     if a.cmd == "sync":
         return sync_cli(cfg, a.pull)
     if a.cmd in ("ingest", "proposals", "show", "approve", "plan"):

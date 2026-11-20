@@ -818,7 +818,7 @@ class WriteError(Exception):
     pass
 
 
-def _write_validated(path, concept, known_ids):
+def _write_validated(path, concept, known_ids, cfg=None):
     text = notes.render_concept(concept)
     errs = notes.validate_concept(text, path.stem, known_ids)
     if errs:
@@ -827,7 +827,46 @@ def _write_validated(path, concept, known_ids):
     path.write_text(text, encoding="utf-8")
 
 
-def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=None):
+def send_cards(cfg, p, anki=None):
+    """Send the pending cards of APPROVED items to Anki (the proposal's deck), tagged lh::<slug> + the node's topics
+    as macro::sub. Anki closed: the cards stay pending (send again from the Inbox). -> {"sent", "pending", "error"}"""
+    from . import lecturesync
+    from .anki import Anki, AnkiError
+    anki = anki or Anki(cfg.anki_url)
+    graph = G.Graph.load(cfg)
+    todo = [(it, c) for it in p["items"] if it["status"] == "approved"
+            for c in it.get("cards") or [] if c.get("status") == "pending"]
+    out = {"sent": 0, "pending": len(todo), "error": None}
+    if not todo:
+        return out
+    html = lambda s: str(s).replace("\n", "<br>")  # noqa: E731
+    notes_ = []
+    for it, c in todo:
+        node = graph.nodes.get(it["slug"])
+        tags = lecturesync.card_tags(it["slug"], node.topics if node else it["concept"].get("topics", []))
+        if c["model"] == "Code":
+            fields = {"Front": html(c["front"]), "Back": c["back"], "InitialCode": c.get("initial_code", "")}
+        else:
+            fields = {cfg.front_field: html(c["front"]), cfg.back_field: html(c["back"])}
+        notes_.append({"deckName": c.get("deck") or p.get("deck"), "modelName": "Code" if c["model"] == "Code"
+                       else cfg.note_type, "fields": fields, "tags": tags, "options": {"allowDuplicate": False}})
+    try:
+        for deck in sorted({n["deckName"] for n in notes_}):
+            anki.call("createDeck", deck=deck)
+        ids = anki.call("addNotes", notes=notes_) or []
+    except AnkiError as e:
+        out["error"] = str(e)
+        save(cfg, p)
+        return out
+    for (it, c), nid in zip(todo, ids):
+        c["status"], c["note_id"] = ("sent", nid) if nid else ("error", None)
+    out["sent"] = sum(1 for i in ids if i)
+    out["pending"] = sum(1 for it, c in todo if c["status"] != "sent")
+    save(cfg, p)
+    return out
+
+
+def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=None, reject_cards=None):
     """Write accepted items. accept=None: every pending item not in `reject`.
     Links: [[from, predicate, to], ...]. `reject_edges` are left out. Conflict links (vetoed by order, topic or
     kind) are left out unless listed in `accept_edges`."""
@@ -875,8 +914,12 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
             it["status"] = "rejected"
 
     if any(it["decision"] == "new" for it in chosen) and p.get("new_topics"):
-        used = {it["concept"]["topic"] for it in chosen if it["decision"] == "new"}
-        topics.append(cfg, p["domain"], [t for t in p["new_topics"] if t["slug"] in used])
+        if p.get("method") == "v5":                        # shared topic list: only the topics the notes use
+            used = {t for it in chosen if it["decision"] == "new" for t in it["concept"].get("topics", [])}
+            topics.add_all(cfg, [t for t in p["new_topics"] if f"{t['macro']}/{t['sub']}" in used])
+        else:
+            used = {it["concept"]["topic"] for it in chosen if it["decision"] == "new"}
+            topics.append(cfg, p["domain"], [t for t in p["new_topics"] if t["slug"] in used])
 
     for it in chosen:
         c = it["concept"]
@@ -892,12 +935,13 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
                        if e["predicate"] != "requires" and edge_ok(slug, e["to"], e)]
                 pre = [e["from"] for e in it["required_by"] if edge_ok(e["from"], slug, e)]
                 concept = {"id": slug, "title": c["title"], "aliases": c["aliases"], "kind": c["kind"],
-                           "domain": p["domain"], "topic": c["topic"], "course": c.get("course", ""),
-                           "definition": c["definition"],
+                           "topics": c.get("topics") or [], "domain": p.get("domain", ""), "topic": c.get("topic", ""),
+                           "definition": c["definition"], "pseudocode": c.get("pseudocode", ""),
+                           "proof": c.get("proof", ""),
                            "propositions": [{"text": x["text"], "source": x["source"]} for x in c["propositions"]],
                            "requires": req, "prerequisite_of": pre, "related": rel, "sources": c["sources"]}
-                _write_validated(cfg.graph / p["domain"] / f"{slug}.md", concept, known)
-                summary["written"].append(f"{p['domain']}/{slug}")
+                _write_validated(cfg.graph / f"{slug}.md", concept, known, cfg)         # one flat folder
+                summary["written"].append(slug)
             elif it["decision"] == "extends":
                 node = graph.nodes[it["match"]]
                 concept = notes.parse_concept(node.path.read_text(encoding="utf-8"))
@@ -907,12 +951,18 @@ def apply(cfg, pid, accept=None, reject=None, reject_edges=None, accept_edges=No
                                             for x in it["new_propositions"] if x["text"] not in have]
                 concept["sources"] += [x["source"] for x in it["new_propositions"]
                                        if x["source"] not in concept["sources"]]
-                _write_validated(node.path, concept, known)
+                _write_validated(node.path, concept, known, cfg)
                 summary["extended"].append(node.id)
             it["status"] = "approved"
         except WriteError as e:
             summary["errors"].append(str(e))
 
+    for it in p["items"]:                                  # cards the learner unticked are never sent
+        for k, card in enumerate(it.get("cards") or []):
+            if [it["index"], k] in [list(x) for x in (reject_cards or [])] and card.get("status") == "pending":
+                card["status"] = "rejected"
+    if any(it.get("cards") for it in p["items"]):
+        summary["cards"] = send_cards(cfg, p)
     if not any(it["status"] == "pending" for it in p["items"]):
         p["status"] = "done"
     p["held_conflicts"] = [h for k, h in held.items() if k not in yes_edge]
@@ -974,7 +1024,7 @@ def accept_conflicts(cfg, pid, keys):
             c["related"] = list(c["related"]) + [(pred, value)]
         else:
             c[field] = list(dict.fromkeys(c[field] + [value]))
-        _write_validated(target.path, c, set(graph.nodes))
+        _write_validated(target.path, c, set(graph.nodes), cfg)
         p["held_conflicts"].remove(h)
         done.append(list(key))
     save(cfg, p)

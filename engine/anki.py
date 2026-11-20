@@ -55,6 +55,18 @@ class Anki:
         return {"card_id": c["cardId"], "note_id": c["note"], "deck": c["deckName"], "tags": c.get("tags", []),
                 "model": c.get("modelName"), "front": front, "back": back}
 
+    def card_counts(self) -> dict:
+        """{graph slug: number of cards} over EVERY deck: a card belongs to the node in its `lh::<slug>` tag."""
+        nids = self.call("findNotes", query="tag:lh::*") or []
+        out = {}
+        for k in range(0, len(nids), 500):
+            for n in self.call("notesInfo", notes=nids[k:k + 500]) or []:
+                for t in n.get("tags", []):
+                    if t.lower().startswith("lh::"):
+                        slug = t[4:]
+                        out[slug] = out.get(slug, 0) + max(1, len(n.get("cards") or []))
+        return out
+
     # ── writes ──
     def rate(self, card_id: int, ease: int) -> bool:
         return bool(self.call("answerCards", answers=[{"cardId": card_id, "ease": ease}])[0])

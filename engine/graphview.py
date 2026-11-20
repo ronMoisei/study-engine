@@ -19,12 +19,12 @@ COURSE_ROW = 8                                   # course view: at most this man
 
 
 def group_of(cfg, node):
-    """Course graphs: every node goes to its course (atomic notes by folder, concepts by their `course` field or
-    the course their sources come from); concepts with no course stay in their domain."""
-    if node.course:
-        return node.course
+    """The group a node is coloured and filtered by: an atomic note's MACRO topic (the first of its topics). Older
+    read-only course notes, until migrated, go to their course folder."""
     if node.is_concept or not node.readonly:
         return node.domain or "graph"
+    if node.course:
+        return node.course
     rel = _rel(node.path, cfg.material)
     return rel.parts[0] if rel is not None and len(rel.parts) > 1 else "course"
 
@@ -80,11 +80,14 @@ def graph_payload(cfg, group=None, focus=None, around=1, g=None):
         for p, t in g.nodes[i].edges:
             if p in LATERAL and t in shown and i < t:
                 edges.append({"from": i, "to": t, "type": p})
-    knowledge = not focus and not group                     # all knowledge: clustered by concept, not by course
+    knowledge = not focus and not group                     # all knowledge: clustered by subtopic
     cluster_of, cluster_list, sections = {}, [], []
+    tlist = topics.load_all(cfg)
     if knowledge:
         cluster_of, names = clusters.cluster(shown, [(e["from"], e["to"]) for e in edges],
-                                             lambda i: g.nodes[i].topic or g.nodes[i].domain)
+                                             lambda i: (g.nodes[i].topics or [g.nodes[i].topic or g.nodes[i].domain])[0])
+        sub_title = {clusters.norm_topic(t["slug"]): t["title"] for t in tlist}
+        names = {c: sub_title.get(c, n) for c, n in names.items()}       # a cluster named after its subtopic
         # grid cells are ~2.8x wider than tall in the panel, so 0.6 grid aspect ≈ a 1.6:1 picture
         pos, blocks = layout_clusters(shown, deps, cluster_of.get, key=topic_key, aspect=0.6)
         cluster_list = _macro(g, st, shown, deps, cluster_of, names, pos, blocks)
@@ -104,7 +107,7 @@ def graph_payload(cfg, group=None, focus=None, around=1, g=None):
     nodes = []
     for i in sorted(shown):
         n = g.nodes[i]
-        x = {"id": i, "name": n.name, "kind": n.kind, "topic": n.topic, "group": group_of(cfg, n),
+        x = {"id": i, "name": n.name, "kind": n.kind, "topic": n.topic, "topics": n.topics, "group": group_of(cfg, n),
              "status": st.get(i, "untested"), "concept": n.is_concept, "readonly": n.readonly,
              "focus": i == focus, **pos[i]}
         if knowledge:
@@ -125,7 +128,11 @@ def graph_payload(cfg, group=None, focus=None, around=1, g=None):
                 if a != b:
                     agg[(a, b)] = agg.get((a, b), 0) + 1
         cluster_edges = [{"from": a, "to": b, "count": c} for (a, b), c in sorted(agg.items())]
-    return {"nodes": nodes, "edges": edges, "groups": dict(sorted(groups.items())), "group": group,
+    macro_title = dict(topics.macros(tlist))
+    order = {m: k for k, (m, _) in enumerate(topics.macros(tlist))}       # macro topics in the list's order
+    return {"nodes": nodes, "edges": edges, "group": group,
+            "groups": dict(sorted(groups.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))),
+            "group_titles": {k: macro_title.get(k, k.replace("-", " ").capitalize()) for k in groups},
             "clusters": cluster_list, "cluster_edges": cluster_edges, "sections": sections,
             "focus": focus, "levels": max((p["level"] for p in pos.values()), default=-1) + 1,
             "status_counts": counts, "total_nodes": len(g.nodes)}
@@ -180,15 +187,15 @@ def cluster_detail(cfg, cluster_id):
             "outside": [{**item(i), "cluster": cname.get(node_cluster.get(i), "")} for i in outside]}
 
 
-def cluster_message(cfg, cluster_id, level=None, goal=None):
+def cluster_message(cfg, cluster_id, level=None, goal=None, grill=False):
     """'Prepare lecture' for a whole cluster: a deterministic lecture plan handed to agy."""
     level = learn.level_of(level)
     c = cluster_detail(cfg, cluster_id)
     todo = [x for x in c["order"] if x["status"] != "held"]
     lines = ["Use the `learning-harness` skill.",
-             f"Topic: the concept cluster **{c['name']}** ({c['size']} concepts in the study graph; courses: "
+             f"Topic: the concept cluster **{c['name']}** ({c['size']} concepts in the study graph; macro topics: "
              + ", ".join(c["courses"]) + "). Prepare it as one lecture."]
-    lines += learn.header(level, goal)
+    lines += learn.header(level, goal, grill)
     if c["outside"]:
         lines += ["", "Prerequisites from other clusters (check these first; held ones need no teaching):"]
         lines += [f"- {x['name']} (`{x['id']}`, {x['cluster']}) — {x['status']}" for x in c["outside"]]
@@ -211,7 +218,7 @@ def node_detail(cfg, node_id):
     order, _ = g.study_order([node_id])
     name = lambda i: g.nodes[i].name if i in g.nodes else i  # noqa: E731
     return {
-        "id": node_id, "name": n.name, "kind": n.kind, "topic": n.topic, "group": group_of(cfg, n),
+        "id": node_id, "name": n.name, "kind": n.kind, "topic": n.topic, "topics": n.topics, "group": group_of(cfg, n),
         "definition": n.statement, "propositions": n.propositions, "aliases": n.aliases, "sources": n.sources,
         "status": st.get(node_id, "untested"), "readonly": n.readonly, "concept": n.is_concept,
         "requires": [{"id": d, "name": name(d), "status": st.get(d, "untested")} for d in g.requires(node_id)],
@@ -222,7 +229,7 @@ def node_detail(cfg, node_id):
     }
 
 
-def teach_message(cfg, node_id, level=None, goal=None):
+def teach_message(cfg, node_id, level=None, goal=None, grill=False):
     """The message handed to the agy conversation: deterministic, built from the graph, not by a model.
     `level` (1-5, self-rated) picks the session mode; `goal` is the learner's scope in their own words."""
     level = learn.level_of(level)
@@ -232,7 +239,7 @@ def teach_message(cfg, node_id, level=None, goal=None):
         "Use the `learning-harness` skill.",
         f"Topic: **{d['name']}** (graph node `{d['id']}`" + (f", note `{d['file']}`" if d["file"] else "") + ").",
     ]
-    lines += learn.header(level, goal)
+    lines += learn.header(level, goal, grill)
     lines += ["", "Prerequisite path from the study engine, foundations first, with my status from the evidence log:"]
     lines += [f"{i}. {p['name']} (`{p['id']}`) — {p['status']}" for i, p in enumerate(d["path"], 1)]
     # levels 3-4 evaluate this topic alone; only a project (5) combines it with its neighbours
@@ -262,7 +269,7 @@ def _nodes_from(cfg, g, st, path):
     return [{"id": i, "name": g.nodes[i].name, "status": st.get(i, "untested")} for i in order if i in keep]
 
 
-def learn_message(cfg, target, level=None, goal=None):
+def learn_message(cfg, target, level=None, goal=None, grill=False):
     """Inbox 'Start learning': target = a graph node (id or name), a Material file/folder/course, or a topic in words."""
     level = learn.level_of(level)
     t = str(target or "").strip()
@@ -271,17 +278,17 @@ def learn_message(cfg, target, level=None, goal=None):
     g = Graph.load(cfg)
     st = statuses(cfg.ledger)
     if t in g.nodes:
-        return teach_message(cfg, t, level, goal)
+        return teach_message(cfg, t, level, goal, grill)
     by_name = {n.name.lower(): i for i, n in g.nodes.items()}
     for i, n in g.nodes.items():
         for a in n.aliases or []:
             by_name.setdefault(str(a).lower(), i)
     if t.lower() in by_name:
-        return teach_message(cfg, by_name[t.lower()], level, goal)
+        return teach_message(cfg, by_name[t.lower()], level, goal, grill)
     path = learn.find_material(cfg, t)
     if path is not None:
-        return learn.material_message(cfg, path, level, goal, _nodes_from(cfg, g, st, path))
+        return learn.material_message(cfg, path, level, goal, _nodes_from(cfg, g, st, path), grill)
     words = [w for w in re.findall(r"[a-z0-9]{4,}", t.lower())]
     related = [{"id": i, "name": n.name, "status": st.get(i, "untested")} for i, n in sorted(g.nodes.items())
                if words and any(w in n.name.lower() for w in words)][:8]
-    return learn.topic_message(level, goal, t, related)
+    return learn.topic_message(level, goal, t, related, grill)

@@ -125,6 +125,13 @@ function levelPicker(onchange) {
 const goalBox = (placeholder) => el("textarea", { class: "goal", rows: 2, placeholder });
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== "")).toString();
 
+/** "Grill me first": the session starts with the grill-me interview (a goal contract before any plan). */
+function grillBox(checked, onchange) {
+  const cb = el("input", { type: "checkbox", checked, onchange });
+  return { el: el("label", { class: "muted grill", title: "agy first asks you, one question at a time, what exactly you need (deliverable, the material's tasks, depth, what is out of scope) and gets your yes before planning" },
+    cb, " Grill me first — pin down my goal before any plan (/grill-me)"), value: () => (cb.checked ? 1 : "") };
+}
+
 /** Send / show / copy buttons for a message the engine builds (GET msgPath, POST sendPath).
  *  The main button always starts a NEW session (in the project set in .study/settings.json); sending into the
  *  conversation the panel sits next to is a separate, explicit button. */
@@ -161,8 +168,8 @@ function view() { const v = document.getElementById("view"); v.replaceChildren()
 function err(parent, e) { parent.append(el("div", { class: "error" }, e.message || String(e))); }
 
 // ── tabs ──
-const TABS = { knowledge: () => Graph.render("knowledge"), course: () => Graph.render("course"),
-  inbox: () => Inbox.home(), review: () => Review.home() };
+const TABS = { teach: () => Inbox.home(), evaluate: () => Review.home(), graph: () => Graph.render(),
+  sync: () => KnowledgeSync.page() };
 document.getElementById("tabs").addEventListener("click", (ev) => {
   const t = ev.target.closest("button[data-tab]");
   if (!t) return;
@@ -172,19 +179,23 @@ document.getElementById("tabs").addEventListener("click", (ev) => {
 
 // ═════════════════════════════ GRAPH ═════════════════════════════
 const Graph = {
-  state: { group: ALL, focus: null, lateral: true, data: null, tx: 0, ty: 0, k: 1 },
-  mode: "knowledge",                                    // "knowledge" (All Knowledge tab) | "course" (Course tab)
+  // group: always every course (ALL) unless a "path to" view; course: the course coloured on the map (ALL = every one)
+  state: { group: ALL, course: ALL, focus: null, lateral: true, data: null, tx: 0, ty: 0, k: 1 },
 
-  async render(mode) {
+  async render() {
     const v = view();
     const s = this.state;
-    this.mode = mode || this.mode;
-    s.focus = null;
-    if (this.mode === "knowledge") s.group = ALL;
-    else { let c = ""; try { c = localStorage.getItem("study.course") || ""; } catch (e) { /* storage blocked */ } s.group = c; }
+    s.focus = null; s.group = ALL;
+    await Knowledge.loadView();                         // the last settings and topic choice (kept by the engine)
+    s.course = Knowledge.cfg.course || ALL;
     const bar = el("div", { class: "row" });
-    const sel = el("select", { onchange: () => { s.group = sel.value; s.focus = null; try { localStorage.setItem("study.course", s.group); } catch (e) { /* storage blocked */ } this.load(); } });
-    if (this.mode === "knowledge") sel.style.display = "none";
+    const sel = el("select", { class: "coursesel", title: "colour one macro topic; the others turn grey", onchange: () => {
+      if (!sel.value) return;                           // the "path to" line
+      s.course = sel.value;
+      Knowledge.cfg.course = s.course; Knowledge.save();
+      if (s.focus) { s.focus = null; return this.load(); }   // leave the "path to" view
+      this.courseInfo(); Knowledge.redraw();
+    } });
     const search = el("input", { type: "search", placeholder: "find a concept…", list: "node-names", style: "flex:1;min-width:120px" });
     const names = el("datalist", { id: "node-names" });
     search.addEventListener("change", () => {
@@ -198,11 +209,10 @@ const Graph = {
       if (this.knowledge()) Knowledge.redraw(); else this.draw();
     } }), " lateral links");
     bar.append(sel, search, names, lat);
-    if (this.mode === "knowledge") bar.append(el("button", { class: "primary", title: "find new lectures and material and bring them into the graph",
-      onclick: () => KnowledgeSync.open() }, "⟳ Sync Knowledge"));
     const info = el("div", { class: "row muted" });
-    const legend = el("div", { class: "legend muted" }, ...STATUS.map((st) => el("span", { style: `--c: var(--st-${st})` }, st.replace("_", " "))),
-      el("span", { style: "--c: transparent; border: 1px dashed var(--s-muted)" }, "course note (read-only)"));
+    const legend = el("div", { class: "legend muted" },
+      el("span", { style: "--c: #f4f4f4" }, "not mastered yet"), el("span", { style: "--c: var(--s-accent)" }, "mastered"),
+      el("span", { class: "muted" }, "· a cluster's fill grows with the share of its concepts you master; its glow is its topic"));
     const wrap = el("div", { class: "graph-wrap" });
     v.append(bar, info, legend, wrap);
     this.els = { sel, search, names, info, wrap };
@@ -219,18 +229,17 @@ const Graph = {
     } catch (e) { setStatus(""); return err(this.els.wrap, e); }
     setStatus("");
     const d = s.data;
-    if (!s.focus && this.mode === "course" && !(s.group in d.groups)) {   // first open / course gone: largest course
-      const g = Object.entries(d.groups).sort((a, b) => b[1] - a[1])[0];
-      if (g) { s.group = g[0]; return this.load(); }
-    }
-    const { sel, names, info } = this.els;
-    sel.replaceChildren(...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.group && !s.focus }, `${g} (${n})`)));
-    if (s.focus) { sel.style.display = ""; sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`)); }
+    if (s.course !== ALL && !(s.course in d.groups)) s.course = ALL;     // course gone (renamed, retired)
+    const { sel, names } = this.els;
+    const total = Object.values(d.groups).reduce((a, b) => a + b, 0);
+    const title = (g) => (d.group_titles || {})[g] || g;
+    sel.replaceChildren(el("option", { value: ALL, selected: s.course === ALL && !s.focus }, `All topics (${total})`),
+      ...Object.entries(d.groups).map(([g, n]) => el("option", { value: g, selected: g === s.course && !s.focus }, `${title(g)} (${n})`)));
+    // cards per node over every Anki deck (by lh:: tag); arrives after the graph, shown on hover and in the details
+    api("GET", "/anki/counts").then((r) => { s.cards = r.counts || {}; s.cardsOk = r.ok; }).catch(() => {});
+    if (s.focus) sel.prepend(el("option", { value: "", selected: true }, `path to: ${d.nodes.find((n) => n.focus)?.name || s.focus}`));
     names.replaceChildren(...d.nodes.map((n) => el("option", { value: n.name })));
-    const c = d.status_counts;
-    info.replaceChildren(`${d.nodes.length} concepts · ${d.levels} levels · `,
-      ...STATUS.filter((st) => c[st]).map((st) => el("span", {}, pill(st), ` ${c[st]} `)),
-      s.focus ? el("a", { onclick: () => this.render() }, this.mode === "knowledge" ? " ← all knowledge" : " ← whole course") : "");
+    this.courseInfo();
     s.tx = 20; s.ty = 20; s.k = 1;
     this.draw();
     requestAnimationFrame(() => this.home());          // size is only known after layout
@@ -262,6 +271,25 @@ const Graph = {
   },
 
   knowledge() { return this.state.group === ALL && !this.state.focus; },
+
+  /** Counts (for the coloured course, or all) and the course colour key. */
+  courseInfo() {
+    const s = this.state, d = s.data, info = this.els?.info;
+    if (!d || !info) return;
+    const all = s.course === ALL || s.focus;
+    const mine = all ? d.nodes : d.nodes.filter((n) => n.group === s.course);
+    const c = {};
+    for (const n of mine) c[n.status] = (c[n.status] || 0) + 1;
+    const col = Knowledge.courseColours(d);
+    // macro topic names; an older course group keeps its name without the code
+    const name = (g) => (d.group_titles || {})[g] || g.replace(/^[0-9]{2}[A-Z]{5}\s+-\s+/, "");
+    const key = s.focus || Knowledge.cfg.colour !== "course" ? [] : (all ? Object.keys(col) : [s.course]).map((g) =>
+      el("span", { class: "coursekey", title: g }, el("i", { style: `background:${col[g]}` }), name(g)));
+    info.replaceChildren(all ? `${mine.length} concepts · ${d.levels} levels · ` : `${mine.length} of ${d.nodes.length} concepts · `,
+      ...STATUS.filter((st) => c[st]).map((st) => el("span", {}, pill(st), ` ${c[st]} `)),
+      s.focus ? el("a", { onclick: () => this.render() }, " ← all knowledge") : "",
+      key.length ? el("div", { class: "coursekeys" }, ...key) : "");
+  },
 
   draw() {
     const s = this.state, d = s.data, wrap = this.els.wrap;
@@ -397,15 +425,18 @@ const Graph = {
     const goal = goalBox("Goal / scope (optional): e.g. theory only, no code");
     let acts;
     const picker = levelPicker(() => acts.refresh());
-    acts = messageActions(() => ({ id, level: picker.value, goal: goal.value.trim() }), "/teach-message", "/teach", () => !!picker.value,
+    const grill = grillBox(false, () => acts.refresh());              // one concept is already a narrow goal
+    acts = messageActions(() => ({ id, level: picker.value, goal: goal.value.trim(), grill: grill.value() }), "/teach-message", "/teach", () => !!picker.value,
       "Teach me this");
     dr.replaceChildren(
       el("button", { class: "close", onclick: () => dr.remove() }, "✕"),
       el("h3", {}, n.name),
-      el("div", { class: "row" }, pill(n.status), el("span", { class: "muted" }, [n.kind, n.topic || n.group].filter(Boolean).join(" · ") + (n.readonly ? " · course note" : ""))),
+      el("div", { class: "row" }, pill(n.status), el("span", { class: "muted" }, [n.kind, ...(n.topics?.length ? n.topics : [n.topic || n.group])].filter(Boolean).join(" · ")
+        + (n.readonly ? " · course note" : "")
+        + (this.state.cardsOk === false ? "" : ` · ${(this.state.cards || {})[id] || 0} Anki cards (all decks)`))),
       mdEl(n.definition),
       n.propositions.length ? el("ul", {}, ...n.propositions.map((p) => { const li = el("li"); li.innerHTML = md(p.text); return li; })) : "",
-      el("h4", {}, "How well do you know it?"), picker.el, goal,
+      el("h4", {}, "How well do you know it?"), picker.el, goal, grill.el,
       el("div", { class: "row" }, acts.send, acts.show, acts.copy,
         el("button", { onclick: () => { this.state.focus = id; this.load(); } }, "Show path"),
         n.obsidian ? el("a", { href: n.obsidian, target: "_blank" }, "Open in Obsidian") : ""),
@@ -426,10 +457,36 @@ const Graph = {
 // ═════════════════════════════ INBOX ═════════════════════════════
 const Inbox = {
   poll: null,
+  /** Each unfinished plan: progress bar, its sections with numbered steps (done = filled, current = ringed). */
+  renderPlans(box, plans) {
+    if (!plans.length) return box.replaceChildren();
+    box.replaceChildren(el("h3", {}, "Your study plans"), ...plans.map((p) => {
+      const pct = p.progress.total ? Math.round(100 * p.progress.done / p.progress.total) : 0;
+      return el("div", { class: "plan" },
+        el("div", { class: "row" }, el("b", {}, p.goal || p.slug), el("span", { class: "muted" },
+          `${p.progress.done}/${p.progress.total} steps · ${p.phase}${p.updated ? ` · ${p.updated}` : ""}`)),
+        el("div", { class: "planbar" }, el("i", { style: `width:${pct}%` })),
+        p.next ? el("div", { class: "muted" }, "next: ", el("b", {}, p.next)) : "",
+        ...p.sections.map((s) => el("div", { class: "plansec" },
+          s.title ? el("div", { class: "muted plansec-title" }, s.title) : "",
+          el("div", { class: "steps" }, ...s.steps.map((x) => el("span", { class: `step step-${x.status}`, title: `${x.id} ${x.title} — ${x.status}` },
+            el("span", { class: "stepid" }, x.id), ` ${x.title}`))))));
+    }));
+  },
   async home(note) {
     clearInterval(this.poll);
+    clearInterval(this.planPoll);
     const v = view();
     if (note) v.append(el("div", { class: "muted" }, note));
+    // 0. the study plans in progress: steps fill as the teaching agent completes them (refreshed while open)
+    const plansBox = el("div", { class: "plans" });
+    v.append(plansBox);
+    const refresh = async () => {
+      if (!plansBox.isConnected) return clearInterval(this.planPoll);
+      try { this.renderPlans(plansBox, (await api("GET", "/plans")).plans); } catch (e) { /* engine busy: next time */ }
+    };
+    refresh();
+    this.planPoll = setInterval(refresh, 15000);
     // 1. what to learn: target + goal + level -> a learning session in agy
     v.append(el("h3", {}, "What do you want to learn?"));
     const target = el("input", { type: "text", list: "courses", style: "width:100%",
@@ -440,11 +497,12 @@ const Inbox = {
     goal.rows = 3;
     let acts;
     const picker = levelPicker(() => acts.refresh());
-    acts = messageActions(() => ({ target: target.value.trim(), level: picker.value, goal: goal.value.trim() }),
+    const grill = grillBox(true, () => acts.refresh());               // on by default: a goal contract first
+    acts = messageActions(() => ({ target: target.value.trim(), level: picker.value, goal: goal.value.trim(), grill: grill.value() }),
       "/learn-message", "/learn", () => !!picker.value && !!(target.value.trim() || goal.value.trim()), "Start learning");
     target.addEventListener("input", acts.refresh);
     goal.addEventListener("input", acts.refresh);
-    v.append(target, courseList, goal, picker.el, el("div", { class: "row" }, acts.send, acts.show, acts.copy), acts.out, acts.msgBox);
+    v.append(target, courseList, goal, picker.el, grill.el, el("div", { class: "row" }, acts.send, acts.show, acts.copy), acts.out, acts.msgBox);
 
     // 2. the same file / folder / course into concept proposals for the graph
     v.append(el("h3", {}, "Add material to the graph"),
@@ -483,7 +541,9 @@ const Inbox = {
           el("button", { onclick: async () => { await api("POST", `/proposals/${p.id}/discard`); this.home(); } }, "Discard"));
       } else {
         row.append(el("a", { onclick: () => this.show(p.id) }, p.source.split("/").pop()),
-          el("div", { class: "muted" }, `${p.domain} · ${p.stats.new} new · ${p.stats.covered} covered · ${p.pending ? p.pending + " to review" : "done"}` +
+          el("div", { class: "muted" }, (p.stats.easy_cards !== undefined
+            ? `${p.stats.lectures} lectures · ${p.stats.new} new notes · ${p.stats.extends} add to existing · ${p.stats.easy_cards + p.stats.medium_cards} cards`
+            : `${p.domain} · ${p.stats.new} new · ${p.stats.covered} covered`) + ` · ${p.pending ? p.pending + " to review" : "done"}` +
             `${p.held ? ` · ` : ""}`, p.held ? el("span", { class: "warn" }, `${p.held} links held`) : "", ` · ${p.created.replace("T", " ")}`));
       }
       v.append(row);
@@ -514,11 +574,25 @@ const Inbox = {
     let p;
     try { p = await api("GET", `/proposals/${pid}`); } catch (e) { return this.home(e.message); }
     const st = p.stats, lk = st.links || {}, t = (st.usage && st.usage.tokens) || {};
+    const v5 = p.method === "v5";
+    const lecture = (rel) => rel.split("/").slice(-2, -1)[0] || rel.split("/").pop();
     v.append(el("a", { onclick: () => this.home() }, "← back"), el("h3", {}, p.source.name.split("/").pop()),
-      el("div", { class: "muted" }, `${p.domain} · ${st.claims} claims → ${st.concepts} concepts: ${st.new} new, ${st.extends} extend a note, ${st.covered} covered, ${st.merged} merged`),
-      el("div", { class: "muted" }, `links: ${lk.confident || 0} confident · ${lk.model || 0} model only · ${lk.conflict || 0} conflicts · cloud tokens ${t.total_tokens || 0}`));
+      v5 ? el("div", { class: "muted" }, `${st.lectures} lectures → ${st.new} new notes, ${st.extends} add to notes you have · ${st.links} prerequisite links (${st.dropped_links} dropped by the checks)` +
+          (st.new_topics ? ` · ${st.new_topics} new topics` : ""))
+        : el("div", { class: "muted" }, `${p.domain} · ${st.claims} claims → ${st.concepts} concepts: ${st.new} new, ${st.extends} extend a note, ${st.covered} covered, ${st.merged} merged`),
+      v5 ? el("div", { class: "muted" }, `cards: ${st.easy_cards} easy + ${st.medium_cards} medium exercises → Anki deck “${p.deck}”, sent when you approve (untick a card to drop it)`)
+        : el("div", { class: "muted" }, `links: ${lk.confident || 0} confident · ${lk.model || 0} model only · ${lk.conflict || 0} conflicts · cloud tokens ${t.total_tokens || 0}`));
     if (note) v.append(el("div", { class: "warn" }, note));
-    const items = new Map(), links = [];
+    const waiting = p.items.filter((it) => it.status === "approved").reduce((n, it) => n + (it.cards || []).filter((c) => c.status === "pending").length, 0);
+    if (waiting) {
+      const msg = el("span", { class: "muted" });
+      v.append(el("div", { class: "row" }, el("span", { class: "warn" }, `${waiting} cards of approved notes are not in Anki yet`),
+        el("button", { onclick: async () => {
+          try { const r = await api("POST", `/proposals/${pid}/cards`); this.show(pid, r.error ? r.error : `Sent ${r.sent} cards to Anki.`); }
+          catch (e) { msg.textContent = e.message; }
+        } }, "Send cards to Anki"), msg));
+    }
+    const items = new Map(), links = [], cardBoxes = [];
     const linkRow = (parent, e, from, to, label) => {
       const cb = el("input", { type: "checkbox", checked: e.accepted });
       links.push({ cb, key: [from, e.predicate, to], conflict: e.confidence === "conflict" });
@@ -532,21 +606,37 @@ const Inbox = {
       const d = el("div", { class: `item item-${it.decision} st-${it.status}` });
       const head = el("div", { class: "row" });
       if (it.status === "pending" && (it.decision === "new" || it.decision === "extends")) { const cb = el("input", { type: "checkbox", checked: true }); items.set(it.index, cb); head.append(cb); }
-      head.append(el("span", { class: "badge" }, DECISION[it.decision] || it.decision), el("b", {}, c.title), el("span", { class: "muted" }, `${c.kind} · ${c.topic}${it.status !== "pending" ? " · " + it.status : ""}`));
+      head.append(el("span", { class: "badge" }, DECISION[it.decision] || it.decision), el("b", {}, c.title),
+        el("span", { class: "muted" }, `${c.kind} · ${(c.topics && c.topics.length ? c.topics : [c.topic]).join(", ")}${it.status !== "pending" ? " · " + it.status : ""}`));
       d.append(head);
       if (it.match) d.append(el("div", { class: "muted" }, `${it.decision === "merged" ? "merged into" : it.decision === "extends" ? "adds to" : "already covered by"} ${it.match}`));
       d.append(mdEl(c.definition), c.quote ? el("div", { class: "quote" }, `“${c.quote}” — ${c.anchor.split("/").pop()}`)
-        : el("div", { class: "muted" }, `from ${c.anchor.split("/").pop()}`));
+        : el("div", { class: "muted" }, `from ${it.lectures ? it.lectures.map(lecture).join(", ") : (c.anchor || "").split("/").pop()}`));
+      if (c.pseudocode) d.append(el("pre", { class: "pseudo" }, c.pseudocode));
       const props = it.decision === "extends" ? it.new_propositions : it.decision === "new" ? c.propositions : [];
       if (props.length) d.append(el("ul", {}, ...props.map((x) => { const li = el("li"); li.innerHTML = md(x.text); return li; })));
       if (it.decision === "new") {
         for (const e of it.edges) linkRow(d, e, it.slug, e.to, e.predicate === "requires" ? "requires" : e.predicate.replace("_", " "));
         for (const e of it.required_by) linkRow(d, e, e.from, it.slug, "prerequisite of");
-        if (it.dropped_edges.length) {
+        if ((it.dropped_edges || []).length) {
           const det = el("details", {}, el("summary", { class: "muted" }, `${it.dropped_edges.length} links dropped by the checks`));
           for (const x of it.dropped_edges) det.append(el("div", { class: "muted" }, `${x.from} ${x.predicate} ${x.to} — ${x.reason}`));
           d.append(det);
         }
+      }
+      if ((it.cards || []).length) {                     // v5: this note's cards (easy + medium exercises)
+        const det = el("details", {}, el("summary", { class: "muted" },
+          `${it.cards.length} cards (${it.cards.filter((x) => x.kind === "easy").length} easy, ${it.cards.filter((x) => x.kind === "medium").length} medium)` +
+          (it.cards.some((x) => x.status === "sent") ? ` · ${it.cards.filter((x) => x.status === "sent").length} in Anki` : "")));
+        it.cards.forEach((card, k) => {
+          const row = el("div", { class: "card-row" });
+          if (card.status === "pending" && it.status === "pending") { const cb = el("input", { type: "checkbox", checked: true }); cardBoxes.push({ cb, key: [it.index, k] }); row.append(cb); }
+          else row.append(el("span", { class: "muted" }, `${card.status} `));
+          const back = el("details", {}, el("summary", { class: "muted" }, "answer"), mdEl(card.back), card.initial_code ? el("pre", { class: "pseudo" }, card.initial_code) : "");
+          row.append(el("span", { class: `badge badge-${card.kind === "easy" ? "confident" : "model"}` }, card.kind), ` ${card.model} `, mdEl(card.front), back);
+          det.append(row);
+        });
+        d.append(det);
       }
       v.append(d);
     }
@@ -576,8 +666,10 @@ const Inbox = {
         const accept = [...items].filter(([, cb]) => cb.checked).map(([i]) => i);
         const reject_edges = links.filter((l) => !l.cb.checked).map((l) => l.key);
         const accept_edges = links.filter((l) => l.cb.checked && l.conflict).map((l) => l.key);
-        const s = await api("POST", `/proposals/${pid}/apply`, { accept, reject_edges, accept_edges });
-        this.show(pid, `Written ${s.written.length} · extended ${s.extended.length} · ${s.dropped_edges.length} links dropped` + (s.errors.length ? ` · errors: ${s.errors.join("; ")}` : ""));
+        const reject_cards = cardBoxes.filter((x) => !x.cb.checked).map((x) => x.key);
+        const s = await api("POST", `/proposals/${pid}/apply`, { accept, reject_edges, accept_edges, reject_cards });
+        const cards = s.cards ? (s.cards.error ? ` · cards not sent: ${s.cards.error}` : ` · ${s.cards.sent} cards sent to Anki`) : "";
+        this.show(pid, `Written ${s.written.length} · extended ${s.extended.length} · ${s.dropped_edges.length} links dropped${cards}` + (s.errors.length ? ` · errors: ${s.errors.join("; ")}` : ""));
       }) }, "Approve checked"),
       el("button", { onclick: () => act(async () => {
         const reject = [...items].filter(([, cb]) => !cb.checked).map(([i]) => i);
@@ -673,4 +765,4 @@ const Review = {
   },
 };
 
-Graph.render();
+window.addEventListener("DOMContentLoaded", () => Graph.render());     // after knowledge.js is loaded too

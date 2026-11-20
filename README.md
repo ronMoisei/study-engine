@@ -32,7 +32,8 @@ link survives, the study order, verdicts, Anki ratings, and what enters the grap
 | | |
 |---|---|
 | **Concept graph** | Slides, PDFs and notes become concepts (definition + propositions) linked by *requires*, *contrasts with*, *analogue of*. Identity and link direction come from a cloud model; code applies vetoes (loops, lecture order, topic order) and drops shortcut links. |
-| **Knowledge view** | All courses as concept **clusters** (macro-nodes) with directed arrows; open a cluster into its concepts; reasoning chains drawn as *A ∧ B ⟹ C*; layered or force layout with collision; drag clusters; click any link to see what it connects. |
+| **Knowledge view** | All courses as concept **clusters** (macro-nodes) with directed arrows; one colour per course; pick a course in the dropdown and its concepts and links stay coloured while the other courses turn grey (clusters show "7/58": that course's share). Open a cluster into its concepts; reasoning chains drawn as *A ∧ B ⟹ C*; layered or force layout with collision; drag clusters; click any link to see what it connects. |
+| **Anki-ready notes** | Every concept note carries its Anki `deck` (from the course) and `anki_tags` — `lh::<slug>`, its chapter, `node::`, one `req::` per prerequisite — the same Knowledge-DAG tags the anki-bridge skill puts on cards. |
 | **Self-rated levels** | Pick a concept, a cluster or a course and rate yourself 1–5. The level chooses the session mode: 1 teach from scratch · 2 teach, no evaluation · 3 medium evaluation · 4 hard evaluation · 5 a CV-worthy project (mock exam on request). |
 | **Lectures** | A whole cluster as one lecture plan: prerequisites borrowed from other clusters, then every concept foundations-first. |
 | **Capture** | Concepts taught in a session come back as one Inbox proposal per session (`study.py propose`); easy flashcards go to Anki as they are taught. |
@@ -170,18 +171,18 @@ Model assignment (measured choices):
 
 ## The Study panel
 
-Four tabs (All Knowledge, Course, Inbox, Review), plain JavaScript (`sidecar_ui/`), math rendered by vendored KaTeX 0.16.11.
+Three tabs — **Teach** (the Inbox), **Evaluate** (Anki cards), **Knowledge graph** — plain JavaScript
+(`sidecar_ui/`), math rendered by vendored KaTeX 0.16.11.
 
-**Graph**
-- *A course*: the course's atomic notes plus every approved concept learned in that course — from its material or
-  from a teaching session about it (the note's `course` field, or the course folder its source lies in). A course
-  without atomic notes gets its graph as soon as it has one concept. One block per topic (chapter), each a
-  prerequisite DAG laid out deterministically (`engine/layout.py`: level = longest path from a foundation,
-  barycenter sweeps against crossings, foundations at the bottom, at most 8 concepts side by side — a wider level
-  wraps), coloured by learner status.
-- *All knowledge, by concept*: concept clusters as macro-nodes (`engine/clusters.py` — start from each note's topic,
+**Knowledge graph**
+- One map of every course: concept clusters as macro-nodes (`engine/clusters.py` — start from each note's topic,
   fold small topics into the cluster they share most links with). Arrows point from prerequisite to what builds on
-  it; a concept with several premises gets a junction (*A ∧ B ⟹ C*).
+  it; a concept with several premises gets a junction (*A ∧ B ⟹ C*). A concept belongs to a course by its atomic
+  note's folder, its `course` field, or the course folder its source lies in.
+- The dropdown: **All courses** colours every concept by its course (key under the bar) and shows every link. Pick
+  **one course**: its concepts and the links between them keep their colour; other courses' concepts turn grey,
+  their links disappear, and links from the course to another one stay as faint grey hints. A closed cluster shows
+  the course's share (`7/58`); a cluster with none of it is grey. The layout does not move. The choice is remembered.
   - click a cluster to open it; **✕ close**, or double-click empty space, to close it;
   - click an open cluster's **name** to prepare a lecture on it; drag a cluster (or its name) to move it — what it
     touches is pushed aside;
@@ -191,14 +192,29 @@ Four tabs (All Knowledge, Course, Inbox, Review), plain JavaScript (`sidecar_ui/
 - Click a concept: definition, propositions, requires / needed by, study path, *Open in Obsidian*, and **Teach me
   this** with a 1–5 level and an optional goal.
 
-**Inbox**
+**Teach** (the Inbox)
 - *What do you want to learn?* — a file, folder, course or topic in words, a goal ("theory only, no code"), and
   your level → **Start learning** sends a deterministic session brief to agy.
 - *Add material to the graph* — analyse a file, a folder or a whole course (≤ 25 files per run; domain defaults to
   the course name).
 - *Proposals* — every concept and every link has its own checkbox; conflicts start unticked.
 
-**Review** — the Anki loop below.
+**Evaluate** — your Anki cards: the review loop below.
+
+**Atomic notes** (`engine/notes.py`, one flat folder `Graph/<slug>.md`). No course on a note — several courses teach
+the same knowledge from different angles; `sources` say where it was learned. Frontmatter: `kind` (definition ·
+theorem + `## Proof sketch` · algorithm + `## Pseudocode` · mechanism · pitfall, which requires its parent ·
+application · heuristic), `topics` (1–2 `macro/sub` from the shared list `Graph/_topics.md`: the macro is the graph
+colour), `prerequisites` (THE DAG: direct premises, `[[slug]]`), `related` (`contrasts_with` / `analogue_of`),
+`sources`, `epistemic_status`. Older formats are still read; only this one is written.
+
+**Anki cards** carry `lh::<slug>` and the node's topics as `macro::sub` — nothing else (plus `remedial`, `gap::<slug>`
+on a miss); the agy `anki` MCP server enforces it and refuses a card whose node is not mapped (a concept waiting in the
+Inbox counts). `python study.py anki-retag [--dry-run]` brings existing cards in line (merged nodes followed). The
+graph counts each node's cards over every deck.
+
+**Teach** also shows your **study plans** (`Learner/plans/*.md`, `engine/plans.py`): each plan's numbered steps,
+filled as the teaching agent records them in the plan's `done:` list, the current one from `next:`.
 
 Security: the engine binds to `127.0.0.1` only, sends no CORS headers, and every API call must carry the token the
 app passes to the sidecar; only the static UI files are served without it.
@@ -224,44 +240,23 @@ python study.py calls [--last N]               # every model call: job, model, o
 
 Flags everywhere: `--stub` (offline stand-in models) · `--dry-run` (never rate or add in Anki).
 
-## Sync Knowledge (All Knowledge tab)
+## Sync Knowledge (Sync tab)
 
-Course by course, the panel shows what is new, estimates the cloud calls, runs, and resumes where it stopped
-(`engine/knowledge_sync.py`, `engine/syncrun.py`, `engine/coursesync.py`). The notes are written first and the graph
-last: an atomic note says what a concept *is*, but which idea depends on which ("we need A to define B", "from A
-and B it follows that C") lives in the reasoning of the lecture, so the graph is read from the full notes.
+One page for the whole pipeline, on the courses ticked in its table (`engine/lecturesync.py`, `engine/reconcile.py`,
+`engine/rawnotes.py`):
 
-| Stage | Model (config `models`) | Does | Checked by code |
-|---|---|---|---|
-| 1 offline | none, this PC's GPU | lectures without raw notes → `01_Study/Notes/Raw Notes/<lecture>/` (the local lecture pipeline; set its folder and Python in `%LOCALAPPDATA%/study-engine/pc.json`) | the pipeline's checkpoints |
-| 2 full notes | `polish`: Gemini 4 Hydrogen high | each raw note (or, for a course without recordings, slide deck) → `01_Study/Notes/Full Notes/<lecture>/<lecture>_Full_Notes.md`: clean notes that keep every derivation and every "why", ~30k characters per call | never overwrites a full note it did not write (`generated_by: study-engine`) |
-| 3 atomic concepts | `atomize`: Gemini 4 Hydrogen medium | each full note → atomic concept drafts (definition + up to 6 propositions), no links yet | every definition and proposition needs a verbatim quote of the full note |
-| 4 course graph | `consolidate`, `link`: Gemini 4 Argon | only once **every** lecture of the run has its drafts: one call organises the course (chapters in teaching order, duplicates across lectures, drafts that are not knowledge, drafts that repeat a note of another course); then Argon reads the **full notes** — consecutive lectures packed up to ~100k characters per call, so short labs share a call — with the course catalogue → requires / contrasts / analogue links, each with the reason and a quote | links quoted from the notes are *confident*; vetoes (loops, a prerequisite taught in a later lecture), shortcuts removed |
+| Step | Model (Sync tab → Models) | Does |
+|---|---|---|
+| 1 Transcribe | none, this PC's GPU | **Create raw notes**: cleaned audio (`enhance_all.py`), then the lecture pipeline (Whisper, slides, the professor's handwriting) → `01_Study/Notes/Raw Notes/<lecture>/`; Hydrogen low writes a short update per lecture |
+| 2 Atomic notes + easy cards | `notes`: Gemini 4 Hydrogen high | each lecture, **~45 minutes at a time** (one answer covers only ~40 minutes of a 3-hour lecture in detail), in lecture order — each part sees the drafts of the earlier ones: an outline first, then typed notes with topics and direct prerequisites, easy cards for definitions, theorems, algorithms. A **lab** (name: lab, exercises, exam simulation…) gives techniques and pitfalls only, not theory again |
+| · Repeat check | `reconcile`: Hydrogen medium | code finds the existing notes a draft may repeat (title/alias/definition overlap, embeddings); only drafts with candidates go to the model: **integrate** (only the new facts), **skip** (nothing new), **sub-note**, or **new**. Same-title notes must be told apart |
+| 3 Exercises | `exercises`: Hydrogen high | 5–10 medium exercises per lecture on what the professor stresses (labs: 8–15, mostly their own, Code cards when it is code) |
+| 4 Graph | none (code) | prerequisites resolved; loops, shortcuts and prerequisites from a later lecture dropped; near-twin new topics merged; one Inbox proposal per course |
 
-Stages 2–3 run several lectures in parallel (`sync_workers`, default 3) and save each lecture as it finishes
-(`.study/sync/<course>.json`, synced by Drive), so a stopped or failed run continues where it was. The course gets
-**one** Inbox proposal. **Approve all confident** writes every pending concept and every link except conflicts;
-conflicts are held in the proposal until you accept or ignore them. The last run's report is in
-`.study/sync/last_run.json` and shown when the drawer opens. One PC runs a Sync at a time (`.study/sync.lock`).
-
-**Rebuild** (a column in the drawer): redo every lecture of a course that is already in the graph. Nothing is
-replaced until you approve: then the course's previous notes move to `.study/retired/<proposal>/` (kept, not
-deleted; notes captured in teaching sessions stay), its read-only atomic notes are hidden (`.study/rederived.json`),
-and the new notes are written — a concept that keeps its title keeps its id, so its learner history still applies.
-
-**Create raw notes** (top of the drawer): stage 1 on its own for the courses ticked in the table; enabled only when
-a ticked course has new recordings (video or audio) without raw notes (`engine/rawnotes.py`). Ticking every course
-with new recordings runs the pipeline over all courses at once. It first makes a cleaned-up `<stem>_enhanced.mp3`
-for recordings that have none (the pipeline's `enhance_all.py`; Whisper then uses it), starts Ollama if it is not
-running (slide and handwriting reading), then runs `ingest.py --all-courses [--course CODE,CODE]`.
-The drawer shows lecture k/N, the phase and the current step, read from the pipeline's output. After each lecture
-`narrate` (Gemini 4 Hydrogen low, one short call) turns that lecture's log into one to three sentences: numbers,
-and anything unusual (no slide matched, no speech, a failed lecture); if the call fails, the parsed numbers are shown
-instead. **Stop** kills the pipeline; the lecture in progress resumes from its checkpoint next time. Full log:
-`%LOCALAPPDATA%/study-engine/raw_notes/`.
-
-`ingest_method` in the settings picks the pipeline: `v4` (above, default), or `v3` (per file: Argon structure →
-Hydrogen writes → Argon relates, one proposal per file). Analysing a single file from the Inbox uses the per-file one.
+Approving the proposal in **Teach** writes the notes and sends the approved notes' cards to the course's Anki deck
+(`decks.json`); untick a card to drop it; Anki closed → **Send cards to Anki** later. Each lecture is saved as soon as
+it is done (`.study/sync/v5/<course>.json`); model calls are cached. **Test runs**: "first N lectures". Older
+pipelines (`ingest_method` v4, v3) stay selectable in the settings.
 
 ## Material → concept graph (ingest)
 

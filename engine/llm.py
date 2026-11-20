@@ -240,6 +240,45 @@ class StubProvider:
             out = {"markdown": data["text"]}
         elif job == "narrate":
             out = {"text": f"{data['lecture'] or 'run'}: {data['event']}."}
+        elif job == "split":                       # main note = the easy definition; a pitfall extra if there is one
+            out = {"notes": [{"stem": n["stem"], "kind": "definition", "definition": n["easy_definition"] or n["title"],
+                              "propositions": [], "extras": [{"title": f"{n['title']}: pitfall", "kind": "pitfall",
+                                                              "definition": n["easy_pitfall"], "propositions": []}]
+                              if n["easy_pitfall"] else []} for n in data["notes"]]}
+        elif job == "taxonomy":                    # one macro topic; a subtopic per former chapter
+            subs = sorted({(n["hint"].split("/")[-1] or "misc") for n in data["notes"]})
+            out = {"macros": [{"slug": m, "title": m.capitalize(), "subs": [{"slug": s, "title": s} for s in subs]}
+                              for m in ("general", "applied", "other")]}
+        elif job == "assign":                      # the first listed topic; a retired kind becomes heuristic
+            from .graph import KINDS as kinds_now
+            first = data["topic_list"][0].split(" — ")[0]
+            out = {"assign": [{"id": n["id"], "kind": n["kind"] if n["kind"] in kinds_now else "heuristic",
+                               "topics": [first]} for n in data["notes"]]}
+        elif job == "dedupe":
+            out = {"same": []}
+        elif job == "notes":                       # one definition note per paragraph; the first prior note is its
+            paras = [p.strip() for p in data["raw_notes"].split("\n\n") if len(p.split()) >= 6 and not p.startswith("#")]
+            first = data["topic_list"][0].split(" — ")[0]
+            ns = [{"key": f"n{k + 1}", "title": " ".join(p.split()[:3]).strip(".,;:"), "kind": "definition",
+                   "topics": [first], "aliases": [], "definition": p, "propositions": [],
+                   "prerequisites": [f"n{k}"] if k else [], "same_as": ""} for k, p in enumerate(paras[:12])]
+            out = {"outline": [{"section": "the lecture", "notes": [n["key"] for n in ns]}], "notes": ns, "new_topics": [],
+                   "easy_cards": [{"note": n["key"], "model": "Basilare", "front": f"What is {n['title']}?",
+                                   "back": n["definition"]} for n in ns]}
+        elif job == "reconcile":                   # same title: integrate its first proposition (or skip); else new
+            def nt(t):
+                return " ".join(sorted(re.findall(r"[a-z0-9]+", t.lower())))
+            ds = []
+            for pr in data["pairs"]:
+                d, same = pr["draft"], [c for c in pr["candidates"] if nt(c["title"]) == nt(pr["draft"]["title"])]
+                add = [x for x in d["propositions"][:1] if same and x not in same[0]["propositions"]]
+                ds.append({"key": d["key"], "action": ("integrate" if add else "skip") if same else "new",
+                           "target": same[0]["id"] if same else "", "add": add, "why": "stub"})
+            out = {"decisions": ds}
+        elif job == "exercises":
+            out = {"exercises": [{"note": n["key"], "model": "Basilare", "front": f"Apply {n['title']}.",
+                                  "back": "Worked solution."} for n in data["notes"][:5]]
+                   or [{"note": "x", "model": "Basilare", "front": "f", "back": "b"}]}
         elif job == "atomize":
             # one concept per passage: its first sentence of 4+ words is the definition and the quote
             cs = []

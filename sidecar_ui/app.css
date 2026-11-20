@@ -70,6 +70,37 @@ svg.knowledge { background: radial-gradient(ellipse at 50% 40%, #16161a 0%, #0c0
 .kedge.lateral { stroke: var(--s-accent); stroke-dasharray: 3 4; }
 .kedge.hot { stroke: #fff; }
 .kedge.dim { opacity: .12; }
+.syncpage { padding: 4px 2px 24px; max-width: 900px; }
+.syncstep { border: 1px solid var(--s-line); border-radius: 8px; padding: 6px 10px 10px; margin: 10px 0; }
+.syncstep h4 { margin: 4px 0 6px; }
+.syncstep .krow { display: flex; gap: 10px; align-items: center; margin: 4px 0; justify-content: flex-start; }
+.syncstep .krow select { min-width: 250px; }
+.syncstep .krow > span { min-width: 220px; }
+.syncstep .rawbox { border: none; padding: 0; margin: 0; }
+input.limit { width: 56px; }
+label.grill { display: block; margin: 6px 0; font-size: 12px; }
+.plans .plan { border: 1px solid var(--s-line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.planbar { height: 6px; background: rgba(127, 127, 127, .2); border-radius: 3px; margin: 6px 0; overflow: hidden; }
+.planbar i { display: block; height: 100%; background: var(--st-held, #3fb950); }
+.plansec { margin: 6px 0 2px; }
+.plansec-title { font-size: 11px; margin-bottom: 3px; }
+.steps { display: flex; flex-wrap: wrap; gap: 4px; }
+.step { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--s-line); color: var(--s-muted); }
+.step .stepid { font-weight: 600; }
+.step-done { background: var(--st-held, #3fb950); border-color: transparent; color: #0b0b0b; }
+.step-current { border: 2px solid var(--s-accent); color: inherit; font-weight: 600; }
+.card-row { display: flex; gap: 6px; align-items: flex-start; padding: 4px 0; border-top: 1px solid var(--s-line); font-size: 12px; flex-wrap: wrap; }
+.card-row > details { flex-basis: 100%; margin-left: 22px; }
+pre.pseudo { font-size: 11px; background: rgba(127, 127, 127, .1); padding: 6px 8px; border-radius: 6px; overflow-x: auto; }
+.node .halo { pointer-events: none; }
+/* one topic coloured: the other topics fade out */
+.node.off { opacity: .35; }
+.node.off text { fill: var(--s-muted); }
+.kedge.offcourse { stroke: #6a6a6a; stroke-width: 1; stroke-dasharray: 2 4; opacity: .5; }
+select.coursesel { max-width: 340px; }
+.coursekeys { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 2px; }
+.coursekey { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.coursekey i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .junction { fill: #bdbdbd; }
 .khit { stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
 .khit:hover + .khit, .khit:hover { stroke: rgba(255,255,255,.06); }

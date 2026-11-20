@@ -135,8 +135,8 @@ class Payload(unittest.TestCase):
         self.assertEqual([x["id"] for x in n["path"]], ["degree_matrix", "graph_laplacian", "fiedler_value_is_the"])
         self.assertEqual([x["id"] for x in n["required_by"]], ["spectral_clustering_partitions_vertices"])
         vault = urllib.parse.quote(self.cfg.magistrale.name)
-        self.assertTrue(n["obsidian"].startswith(f"obsidian://open?vault={vault}&file=Graph/spectral/"))
-        self.assertEqual(n["file"], "Graph/spectral/fiedler_value_is_the.md")
+        self.assertTrue(n["obsidian"].startswith(f"obsidian://open?vault={vault}&file=Graph/fiedler"))
+        self.assertEqual(n["file"], "Graph/fiedler_value_is_the.md")                  # one flat folder
         course = graphview.node_detail(self.cfg, "degree_matrix")
         self.assertEqual(course["group"], "Course")
         self.assertEqual(course["obsidian"], f"obsidian://open?vault={vault}&file=Material/Course/Atomic%20Notes/degree_matrix")
