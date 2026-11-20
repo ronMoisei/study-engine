@@ -165,7 +165,7 @@ ul.rawupdates li.upd-done { font-weight: 600; }
 .st-fragile { background: var(--st-fragile); color: #222; } .st-misconception { background: var(--st-misconception); } .st-held { background: var(--st-held); }
 ul.links { margin: 2px 0; padding-left: 16px; }
 ol.path { margin: 2px 0; padding-left: 20px; }
-.levels { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 4px 0; }
+.levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 4px 0; }
 .levels button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 2px; min-width: 0; }
 .levels button.on { background: color-mix(in srgb, var(--s-accent) 30%, var(--s-card-bg)); border-color: var(--s-accent); }
 .levels .lv { font-weight: 700; font-size: 14px; }

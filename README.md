@@ -34,7 +34,7 @@ link survives, the study order, verdicts, Anki ratings, and what enters the grap
 | **Concept graph** | Slides, PDFs and notes become concepts (definition + propositions) linked by *requires*, *contrasts with*, *analogue of*. Identity and link direction come from a cloud model; code applies vetoes (loops, lecture order, topic order) and drops shortcut links. |
 | **Knowledge view** | All courses as concept **clusters** (macro-nodes) with directed arrows; one colour per course; pick a course in the dropdown and its concepts and links stay coloured while the other courses turn grey (clusters show "7/58": that course's share). Open a cluster into its concepts; reasoning chains drawn as *A ∧ B ⟹ C*; layered or force layout with collision; drag clusters; click any link to see what it connects. |
 | **Anki-ready notes** | Every concept note carries its Anki `deck` (from the course) and `anki_tags` — `lh::<slug>`, its chapter, `node::`, one `req::` per prerequisite — the same Knowledge-DAG tags the anki-bridge skill puts on cards. |
-| **Self-rated levels** | Pick a concept, a cluster or a course and rate yourself 1–5. The level chooses the session mode: 1 teach from scratch · 2 teach, no evaluation · 3 medium evaluation · 4 hard evaluation · 5 a CV-worthy project (mock exam on request). |
+| **Self-rated confidence** | Pick a concept, a cluster or a course and rate your confidence 1–3. Every session runs stage gates (probe each stage → adjust the plan → teach → check); the level sets the difficulty: 1 easy probes, medium stage checks · 2 medium probes, hard stage checks · 3 a hard check on the goal first (right → harder, wrong → level 2). Every session ends with a hard check; evaluation, mock exam and project on request. |
 | **Lectures** | A whole cluster as one lecture plan: prerequisites borrowed from other clusters, then every concept foundations-first. |
 | **Capture** | Concepts taught in a session come back as one Inbox proposal per session (`study.py propose`); easy flashcards go to Anki as they are taught. |
 | **Anki review** | Answer in your own words; a checklist + quote-verified grading decides the verdict and the 1–4 rating; misses create remedial cards due today. |
@@ -190,7 +190,7 @@ Three tabs — **Teach** (the Inbox), **Evaluate** (Anki cards), **Knowledge gra
   - ⚙ settings: level of detail, layered or force layout (repulsion, link length, gravity, direction pull, spacing),
     colour by cluster / status / course, palette, glow, sizes, link opacity.
 - Click a concept: definition, propositions, requires / needed by, study path, *Open in Obsidian*, and **Teach me
-  this** with a 1–5 level and an optional goal.
+  this** with a 1–3 confidence and an optional goal.
 
 **Teach** (the Inbox)
 - *What do you want to learn?* — a file, folder, course or topic in words, a goal ("theory only, no code"), and
@@ -361,7 +361,7 @@ Everything runs offline: stub models, a fake embedder, a temporary workspace, no
 
 ## Status
 
-Built: ingest → proposals → graph, the Study panel (course graph, knowledge view, Inbox, Review), levels 1–5,
+Built: ingest → proposals → graph, the Study panel (course graph, knowledge view, Inbox, Review), confidence levels 1–3 with stage gates,
 cluster lectures, session capture, the Anki review loop.
 
 Next (design stage): evaluation from AnkiDroid cards linked to knowledge gaps; a research phase that finds new

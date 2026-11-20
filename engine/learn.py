@@ -1,5 +1,7 @@
-"""Self-rated level (1-5) + goal -> the message that starts a learning session in agy. Deterministic: built from
-the graph, the evidence log and the folder layout, never by a model. Rules: Agents/rules/learning_harness_doctrine.md §11.
+"""Self-rated confidence (1-3) + goal -> the message that starts a learning session in agy. Deterministic: built from
+the graph, the evidence log and the folder layout, never by a model. Rules: Agents/rules/learning_harness_doctrine.md §11
+and the teach skill's STAGE GATES: whatever the level, every stage of the plan opens with a probe of its sub-steps
+(the plan is adjusted to what the probe finds) and closes with a check; the level sets how hard they are.
 """
 import re
 from pathlib import Path
@@ -9,22 +11,21 @@ from .material import TEXT_EXT, MaterialError
 
 # level -> (what the learner means, phase in the plan note, skill, what the agent should do)
 LEVELS = {
-    1: ("I don't know anything", "teach", "teach (level-1 section)",
-        "Teach it from scratch: a short introduction to the topic and where my material covers it, then let me derive "
-        "the concepts myself through guided exercises and proofs, foundations first. Skip the probe."),
-    2: ("I know parts of it", "teach", "teach (levels 1-2 section)",
-        "Teach it, no evaluation first: compress the terminology I already recognise and spend the time on the "
-        "medium/hard reasoning, guided exercises and proofs."),
-    3: ("I know it", "evaluate", "practice (evaluation kind, medium)",
-        "Evaluate me: medium problems on this topic alone, one at a time. Grade strictly; a structural miss gets a "
-        "short repair, then the next problem."),
-    4: ("I think I know everything", "evaluate", "practice (evaluation kind, hard)",
-        "Evaluate me hard: non-trivial derivations, edge cases and computations with a trap, on this topic alone, one "
-        "at a time, no warm-up. Grade strictly; a structural miss gets a short repair, then the next problem."),
-    5: ("I master it", "project", "project",
-        "Project mode: propose three real, complex projects that use this topic together with others I hold, each "
-        "with a one-line CV description and a first milestone that fits one session. Wait for my pick."),
+    1: ("No confidence", "teach", "teach (stage gates, level 1)",
+        "Level 1 — study plan from my goal. Before EACH stage: EASY probe questions on that stage's sub-steps (do I "
+        "remember / can I compute / can I write the code?), then adjust the plan — a gap becomes extra sub-steps taught "
+        "first, a verified sub-step is skipped. Teach. Close each stage with a MEDIUM check; end the session with a "
+        "HARD check."),
+    2: ("A little confidence", "teach", "teach (stage gates, level 2)",
+        "Level 2 — study plan from my goal. Before EACH stage: MEDIUM probe questions on that stage's sub-steps, then "
+        "adjust the plan (a gap becomes extra sub-steps taught first; a verified sub-step is skipped). Teach. Close "
+        "each stage with a HARD check; end the session with a HARD check."),
+    3: ("Extreme confidence", "evaluate", "teach (stage gates, level 3)",
+        "Level 3 — before any plan, a HARD check on the goal, one question at a time. Right → harder (edge cases, "
+        "traps, conditions relaxed). Wrong → fall back to level 2: study plan, medium probe before each stage, teach, "
+        "hard checks."),
 }
+LEVEL_PROMPT = "ask me for it first (1 no confidence · 2 a little confidence · 3 extreme confidence)"
 OPEN_ONLY = ("Open questions only (explain, derive, prove, compute; code only if my scope includes it). No multiple "
              "choice. I reply free-form (often dictated): answer, reasoning and my own questions together — no "
              "answer/conf/thinking template. No Obsidian callouts in chat.")
@@ -36,12 +37,12 @@ MAX_FILES = 25
 
 
 def level_of(value):
-    """None when not given; ValueError when given but not 1-5."""
+    """None when not given; ValueError when given but not 1-3."""
     if value in (None, "", "null"):
         return None
     lv = int(value)
     if lv not in LEVELS:
-        raise ValueError(f"level must be 1-5, got {value}")
+        raise ValueError(f"level must be 1-3, got {value}")
     return lv
 
 
@@ -54,10 +55,9 @@ def header(level, goal, grill=False):
     lines = [GRILL] if grill else []
     if level:
         meaning, phase, skill, _ = LEVELS[level]
-        lines.append(f"Self-rated level: **{level}/5 — {meaning}** → phase `{phase}` (skill: {skill}).")
+        lines.append(f"Self-rated confidence: **{level}/3 — {meaning}** → phase `{phase}` (skill: {skill}).")
     else:
-        lines.append("Self-rated level: not given — ask me for it first (1 nothing · 2 parts · 3 I know it · "
-                     "4 everything · 5 mastery).")
+        lines.append(f"Self-rated confidence: not given — {LEVEL_PROMPT}.")
     if (goal or "").strip():
         lines.append("My goal / scope, in my words: " + " ".join(goal.split()))
     return lines
@@ -67,14 +67,18 @@ def instructions(level, todo, total):
     if not level:
         return [f"{todo} of {total} steps are not yet held. " if total else "",
                 "Once you have my level, start in the mode it selects.", OPEN_ONLY, CAPTURE]
-    out = [LEVELS[level][3]]
-    if level <= 2 and total:
-        out.append(f"{todo} of {total} steps are not yet held; do not re-teach what the evidence shows as held "
-                   "unless a question contradicts it.")
-    out.append(OPEN_ONLY)
-    if level in (1, 2, 5):                               # modes that introduce new concepts
-        out.append(CAPTURE)
+    out = [LEVELS[level][3], STAGE_GATE]
+    if total:
+        out.append(f"{todo} of {total} steps are not yet held: the probes decide what to teach — never skip a "
+                   "probe because the evidence says held, and never teach a sub-step the probe verified.")
+    out += [OPEN_ONLY, CAPTURE]                          # every level may end up teaching (level 3 falls back)
     return out
+
+
+STAGE_GATE = ("Stage gates (teach skill): probe questions are about THIS stage's sub-steps only, in the order they "
+              "build (can I recall it → compute it → code it → explain why); a gap is taught before anything that "
+              "rests on it — never jump to 'why F1 matters' if I cannot compute precision. Record verified and taught "
+              "sub-steps in the plan's `done:` and keep `next:` on the stage in progress.")
 
 
 # ── material targets ──

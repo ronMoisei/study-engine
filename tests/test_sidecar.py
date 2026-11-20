@@ -150,22 +150,23 @@ class Payload(unittest.TestCase):
 
     def test_level_changes_the_mode(self):
         modes = {lv: graphview.teach_message(self.cfg, "fiedler_value_is_the", lv, "theory only, no code")
-                 for lv in range(1, 6)}
-        self.assertIn("phase `teach`", modes[1]); self.assertIn("Skip the probe", modes[1])
-        self.assertIn("phase `teach`", modes[2]); self.assertIn("no evaluation first", modes[2])   # 1-2: teach only
-        self.assertIn("3 of 3 steps are not yet held", modes[2])
-        self.assertIn("phase `evaluate`", modes[3]); self.assertIn("medium problems", modes[3])
-        self.assertIn("phase `evaluate`", modes[4]); self.assertIn("Evaluate me hard", modes[4])
-        self.assertIn("phase `project`", modes[5]); self.assertIn("CV", modes[5])
-        for m in modes.values():
+                 for lv in range(1, 4)}
+        self.assertIn("phase `teach`", modes[1]); self.assertIn("EASY probe", modes[1]); self.assertIn("MEDIUM check", modes[1])
+        self.assertIn("phase `teach`", modes[2]); self.assertIn("MEDIUM probe", modes[2]); self.assertIn("HARD check", modes[2])
+        self.assertIn("phase `evaluate`", modes[3]); self.assertIn("HARD check on the goal", modes[3])
+        self.assertIn("fall back to level 2", modes[3])
+        for m in modes.values():                               # every level: stage gates, open questions, capture
+            self.assertIn("Stage gates", m)
             self.assertIn("No multiple choice", m)
             self.assertIn("theory only, no code", m)
-        self.assertIn("Spectral clustering partitions vertices", modes[5])   # a project combines connected topics
-        for lv in (2, 3, 4):                                                  # evaluation is on this topic alone
+            self.assertIn("3 of 3 steps are not yet held", m)
+        self.assertIn("Spectral clustering partitions vertices", modes[3])   # harder questions use what it touches
+        for lv in (1, 2):
             self.assertNotIn("Connected topics", modes[lv])
         self.assertIn("ask me for it first", graphview.teach_message(self.cfg, "graph_laplacian"))
-        with self.assertRaises(ValueError):
-            graphview.teach_message(self.cfg, "graph_laplacian", 7)
+        for bad in (4, 5, 7):                                  # 1-3 only (2026-11-20)
+            with self.assertRaises(ValueError):
+                graphview.teach_message(self.cfg, "graph_laplacian", bad)
 
     def test_learn_message_targets(self):
         m = graphview.learn_message(self.cfg, "Graph Laplacian", 2, "")                 # node by name
@@ -249,16 +250,17 @@ class SidecarServer(unittest.TestCase):
     def test_teach_carries_level_and_goal(self):
         calls = []
         with mock.patch.object(sidecar, "agentapi", side_effect=lambda args, **kw: calls.append(args) or {"ok": 1}):
-            st, _, _ = self.req("POST", "/teach", {"id": "graph_laplacian", "level": 4, "goal": "exam", "conversationId": "c"})
+            st, _, _ = self.req("POST", "/teach", {"id": "graph_laplacian", "level": 3, "goal": "exam", "conversationId": "c"})
             self.assertEqual(st, 200)
             self.assertIn("phase `evaluate`", calls[0][2])
-            self.assertIn("Evaluate me hard", calls[0][2])
+            self.assertIn("HARD check on the goal", calls[0][2])
             st, _, _ = self.req("POST", "/learn", {"target": "Course", "level": 1, "conversationId": "c"})
             self.assertEqual(st, 200)
             self.assertIn("Material/Course", calls[1][2])
         self.assertEqual(self.req("GET", "/teach-message?id=graph_laplacian&level=9")[0], 400)
-        st, body, _ = self.req("GET", "/learn-message?target=Course&level=5&goal=cv")
-        self.assertIn("phase `project`", json.loads(body)["message"])
+        self.assertEqual(self.req("GET", "/learn-message?target=Course&level=5&goal=cv")[0], 400)   # 1-3 only now
+        st, body, _ = self.req("GET", "/learn-message?target=Course&level=2&goal=exam")
+        self.assertIn("MEDIUM probe", json.loads(body)["message"])
         self.assertEqual(json.loads(self.req("GET", "/courses")[1])["courses"], ["Course"])
 
     def test_folder_ingest_uses_course_domain(self):
