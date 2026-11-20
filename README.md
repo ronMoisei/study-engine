@@ -33,7 +33,7 @@ link survives, the study order, verdicts, Anki ratings, and what enters the grap
 |---|---|
 | **Concept graph** | Slides, PDFs and notes become concepts (definition + propositions) linked by *requires*, *contrasts with*, *analogue of*. Identity and link direction come from a cloud model; code applies vetoes (loops, lecture order, topic order) and drops shortcut links. |
 | **Knowledge view** | All courses as concept **clusters** (macro-nodes) with directed arrows; open a cluster into its concepts; reasoning chains drawn as *A ∧ B ⟹ C*; layered or force layout with collision; drag clusters; click any link to see what it connects. |
-| **Self-rated levels** | Pick a concept, a cluster or a course and rate yourself 1–5. The level chooses the session mode: 1 teach from scratch · 2 probe the gaps · 3 evaluation · 4 exam · 5 a CV-worthy project. |
+| **Self-rated levels** | Pick a concept, a cluster or a course and rate yourself 1–5. The level chooses the session mode: 1 teach from scratch · 2 teach, no evaluation · 3 medium evaluation · 4 hard evaluation · 5 a CV-worthy project (mock exam on request). |
 | **Lectures** | A whole cluster as one lecture plan: prerequisites borrowed from other clusters, then every concept foundations-first. |
 | **Capture** | Concepts taught in a session come back as one Inbox proposal per session (`study.py propose`); easy flashcards go to Anki as they are taught. |
 | **Anki review** | Answer in your own words; a checklist + quote-verified grading decides the verdict and the 1–4 rating; misses create remedial cards due today. |
@@ -249,10 +249,11 @@ replaced until you approve: then the course's previous notes move to `.study/ret
 deleted; notes captured in teaching sessions stay), its read-only atomic notes are hidden (`.study/rederived.json`),
 and the new notes are written — a concept that keeps its title keeps its id, so its learner history still applies.
 
-**Create raw notes** (top of the drawer): stage 1 on its own, for **all courses** or **one course**, offered only
-when there are new recordings (video or audio) without raw notes (`engine/rawnotes.py`). It first makes a cleaned-up
-`<stem>_enhanced.mp3` for recordings that have none (the pipeline's `enhance_all.py`; Whisper then uses it), starts
-Ollama if it is not running (slide and handwriting reading), then runs `ingest.py --all-courses [--course CODE]`.
+**Create raw notes** (top of the drawer): stage 1 on its own for the courses ticked in the table; enabled only when
+a ticked course has new recordings (video or audio) without raw notes (`engine/rawnotes.py`). Ticking every course
+with new recordings runs the pipeline over all courses at once. It first makes a cleaned-up `<stem>_enhanced.mp3`
+for recordings that have none (the pipeline's `enhance_all.py`; Whisper then uses it), starts Ollama if it is not
+running (slide and handwriting reading), then runs `ingest.py --all-courses [--course CODE,CODE]`.
 The drawer shows lecture k/N, the phase and the current step, read from the pipeline's output. After each lecture
 `narrate` (Gemini 4 Hydrogen low, one short call) turns that lecture's log into one to three sentences: numbers,
 and anything unusual (no slide matched, no speech, a failed lecture); if the call fails, the parsed numbers are shown
@@ -294,10 +295,12 @@ and the rules of the session (open questions only, free-form replies, capture af
 | Level | You mean | Session |
 |---|---|---|
 | 1 | I don't know anything | introduction, then you derive the concepts through guided exercises and proofs |
-| 2 | I know parts of it | probe for the gaps, then teach only those |
-| 3 | I know it | hard single-topic problems |
-| 4 | I think I know everything | exam questions, multi-step and multi-topic |
-| 5 | I master it | three real projects worth a CV line; build one together |
+| 2 | I know parts of it | teach, no evaluation: skim what you recognise, focus on the harder reasoning |
+| 3 | I know it | evaluation: medium problems on this topic alone |
+| 4 | I think I know everything | evaluation: hard problems on this topic alone (non-trivial derivations, edge cases, traps) |
+| 5 | I master it | three real projects worth a CV line; build one together (combines the connected topics) |
+
+A mock exam is run on request, at any level.
 
 **Capture.** After each unit the tutor appends what it taught to `Learner/sessions/<session>_concepts.json` and runs:
 

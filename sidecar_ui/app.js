@@ -102,9 +102,9 @@ const pill = (status) => el("span", { class: `pill st st-${status}` }, status.re
 // ── self-rated level 1-5: picks the teaching mode (doctrine §11) ──
 const LEVELS = {
   1: ["I don't know anything", "teach from scratch: introduction, then you derive it through exercises and proofs"],
-  2: ["I know parts of it", "probe for the gaps, then teach only those"],
-  3: ["I know it", "evaluation: hard problems on this topic alone"],
-  4: ["I think I know everything", "exam: hard multi-step, multi-topic questions"],
+  2: ["I know parts of it", "teach, no evaluation: skim what you recognise, focus on the harder reasoning"],
+  3: ["I know it", "evaluation: medium problems on this topic alone"],
+  4: ["I think I know everything", "evaluation: hard problems on this topic alone"],
   5: ["I master it", "project: a real, complex project for your CV"],
 };
 function levelPicker(onchange) {

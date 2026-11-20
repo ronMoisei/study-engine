@@ -152,14 +152,17 @@ class Payload(unittest.TestCase):
         modes = {lv: graphview.teach_message(self.cfg, "fiedler_value_is_the", lv, "theory only, no code")
                  for lv in range(1, 6)}
         self.assertIn("phase `teach`", modes[1]); self.assertIn("Skip the probe", modes[1])
-        self.assertIn("phase `probe`", modes[2]); self.assertIn("3 of 3 steps are not yet held", modes[2])
-        self.assertIn("phase `evaluate`", modes[3]); self.assertIn("phase `exam`", modes[4])
+        self.assertIn("phase `teach`", modes[2]); self.assertIn("no evaluation first", modes[2])   # 1-2: teach only
+        self.assertIn("3 of 3 steps are not yet held", modes[2])
+        self.assertIn("phase `evaluate`", modes[3]); self.assertIn("medium problems", modes[3])
+        self.assertIn("phase `evaluate`", modes[4]); self.assertIn("Evaluate me hard", modes[4])
         self.assertIn("phase `project`", modes[5]); self.assertIn("CV", modes[5])
         for m in modes.values():
             self.assertIn("No multiple choice", m)
             self.assertIn("theory only, no code", m)
-        self.assertIn("Spectral clustering partitions vertices", modes[4])   # exam mode lists connected topics
-        self.assertNotIn("Connected topics", modes[2])
+        self.assertIn("Spectral clustering partitions vertices", modes[5])   # a project combines connected topics
+        for lv in (2, 3, 4):                                                  # evaluation is on this topic alone
+            self.assertNotIn("Connected topics", modes[lv])
         self.assertIn("ask me for it first", graphview.teach_message(self.cfg, "graph_laplacian"))
         with self.assertRaises(ValueError):
             graphview.teach_message(self.cfg, "graph_laplacian", 7)
@@ -248,7 +251,8 @@ class SidecarServer(unittest.TestCase):
         with mock.patch.object(sidecar, "agentapi", side_effect=lambda args, **kw: calls.append(args) or {"ok": 1}):
             st, _, _ = self.req("POST", "/teach", {"id": "graph_laplacian", "level": 4, "goal": "exam", "conversationId": "c"})
             self.assertEqual(st, 200)
-            self.assertIn("phase `exam`", calls[0][2])
+            self.assertIn("phase `evaluate`", calls[0][2])
+            self.assertIn("Evaluate me hard", calls[0][2])
             st, _, _ = self.req("POST", "/learn", {"target": "Course", "level": 1, "conversationId": "c"})
             self.assertEqual(st, 200)
             self.assertIn("Material/Course", calls[1][2])

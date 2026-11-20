@@ -12,14 +12,15 @@ LEVELS = {
     1: ("I don't know anything", "teach", "teach (level-1 section)",
         "Teach it from scratch: a short introduction to the topic and where my material covers it, then let me derive "
         "the concepts myself through guided exercises and proofs, foundations first. Skip the probe."),
-    2: ("I know parts of it", "probe", "probe, then teach",
-        "Probe my edge first to find the gaps, then teach only what the probe shows missing."),
-    3: ("I know it", "evaluate", "practice (evaluation kind)",
-        "Evaluate me: quasi-hard problems on this topic alone, one at a time. Grade strictly; a structural miss gets a "
+    2: ("I know parts of it", "teach", "teach (levels 1-2 section)",
+        "Teach it, no evaluation first: compress the terminology I already recognise and spend the time on the "
+        "medium/hard reasoning, guided exercises and proofs."),
+    3: ("I know it", "evaluate", "practice (evaluation kind, medium)",
+        "Evaluate me: medium problems on this topic alone, one at a time. Grade strictly; a structural miss gets a "
         "short repair, then the next problem."),
-    4: ("I think I know everything", "exam", "practice (exam kind)",
-        "Exam mode: hard exam-style questions, multi-step and multi-topic, combining this topic with its prerequisites "
-        "and related topics. One question at a time, no warm-up."),
+    4: ("I think I know everything", "evaluate", "practice (evaluation kind, hard)",
+        "Evaluate me hard: non-trivial derivations, edge cases and computations with a trap, on this topic alone, one "
+        "at a time, no warm-up. Grade strictly; a structural miss gets a short repair, then the next problem."),
     5: ("I master it", "project", "project",
         "Project mode: propose three real, complex projects that use this topic together with others I hold, each "
         "with a one-line CV description and a first milestone that fits one session. Wait for my pick."),

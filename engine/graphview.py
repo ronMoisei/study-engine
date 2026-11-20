@@ -235,7 +235,8 @@ def teach_message(cfg, node_id, level=None, goal=None):
     lines += learn.header(level, goal)
     lines += ["", "Prerequisite path from the study engine, foundations first, with my status from the evidence log:"]
     lines += [f"{i}. {p['name']} (`{p['id']}`) — {p['status']}" for i, p in enumerate(d["path"], 1)]
-    if level and level >= 3 and (d["related"] or d["required_by"]):
+    # levels 3-4 evaluate this topic alone; only a project (5) combines it with its neighbours
+    if level and level >= 5 and (d["related"] or d["required_by"]):
         lines += ["", "Connected topics to combine with it:"]
         lines += [f"- {x['name']} (`{x['id']}`) — {x['type'].replace('_', ' ')}" for x in d["related"]]
         lines += [f"- {x['name']} (`{x['id']}`) — builds on it" for x in d["required_by"]]
